@@ -17,6 +17,16 @@ android {
         versionName = "0.1.0"
     }
 
+    // Firma fija para que cada APK nuevo se pueda instalar encima del anterior.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
