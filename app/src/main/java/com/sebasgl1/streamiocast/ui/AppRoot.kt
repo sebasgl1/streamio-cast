@@ -31,7 +31,10 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import androidx.compose.ui.platform.LocalContext
+import com.sebasgl1.streamiocast.StremioApp
 import com.sebasgl1.streamiocast.data.MetaItem
+import com.sebasgl1.streamiocast.player.PlayerScreen
 
 private data class Destination(val route: String, val label: String, val icon: ImageVector)
 
@@ -61,6 +64,7 @@ private fun goTo(nav: NavHostController, route: String) {
 @Composable
 fun AppRoot() {
     val nav = rememberNavController()
+    val app = LocalContext.current.applicationContext as StremioApp
     val entry by nav.currentBackStackEntryAsState()
     val route = entry?.destination?.route
     val showNavigation = destinations.any { it.route == route }
@@ -139,7 +143,16 @@ fun AppRoot() {
                             navArgument("title") { type = NavType.StringType },
                         ),
                     ) {
-                        StreamsScreen(onBack = { nav.popBackStack() })
+                        StreamsScreen(
+                            onBack = { nav.popBackStack() },
+                            onPlay = { request ->
+                                app.pendingPlayback = request
+                                nav.navigate("player")
+                            },
+                        )
+                    }
+                    composable("player") {
+                        PlayerScreen(onBack = { nav.popBackStack() })
                     }
                 }
             }

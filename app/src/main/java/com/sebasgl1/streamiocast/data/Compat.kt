@@ -6,8 +6,8 @@ package com.sebasgl1.streamiocast.data
  * Reglas (fuente: documentación de Google Cast, "Supported media"):
  *  - Vídeo: H.264 High Profile hasta nivel 4.1 → 1080p a 30 fps (o 720p a 60 fps), 8 bits.
  *  - No soporta HEVC/H.265, VP9, AV1, ni HDR / Dolby Vision.
- *  - Contenedores listados: MP4, WebM, MP2T... MKV no figura, así que se reempaqueta (etapa 3).
- *  - Audio en MP4: AAC o MP3. El resto (AC3, E-AC3, DTS, TrueHD...) se convertirá a AAC (etapa 3).
+ *  - Contenedores listados: MP4, WebM, MP2T... MKV no figura, así que se reempaqueta (al transmitir).
+ *  - Audio en MP4: AAC o MP3. El resto (AC3, E-AC3, DTS, TrueHD...) se convertirá a AAC (al transmitir).
  *
  * Todo sale del texto del stream: el códec real solo se conoce al abrir el archivo, así que el
  * veredicto es una estimación y por eso existe el nivel "Dudoso".
@@ -257,14 +257,14 @@ fun classify(info: StreamInfo): Classification {
     val audioOk = info.audio.any { it.castOk }
     val needsAudioConvert = info.audio.isNotEmpty() && !audioOk
     if (needsAudioConvert) {
-        reasons += "Audio ${info.audio.joinToString("/") { it.label }}: habrá que convertirlo a AAC (etapa 3)."
+        reasons += "Audio ${info.audio.joinToString("/") { it.label }}: habrá que convertirlo a AAC (al transmitir)."
     } else if (info.audio.isEmpty()) {
         reasons += "No indica el audio."
     }
 
     val needsRemux = info.container !in setOf("mp4", "m4v", "webm")
     if (needsRemux) {
-        reasons += "Contenedor ${info.container?.uppercase() ?: "MKV u otro"}: se reempaquetará a MP4 (etapa 3)."
+        reasons += "Contenedor ${info.container?.uppercase() ?: "MKV u otro"}: se reempaquetará a MP4 (al transmitir)."
     }
 
     val verdict = when {

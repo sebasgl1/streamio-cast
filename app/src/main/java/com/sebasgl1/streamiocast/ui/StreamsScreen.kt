@@ -48,6 +48,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.sebasgl1.streamiocast.StremioApp
+import com.sebasgl1.streamiocast.player.PlaybackRequest
+import com.sebasgl1.streamiocast.player.toPlayback
 import com.sebasgl1.streamiocast.data.StreamResult
 import com.sebasgl1.streamiocast.data.Verdict
 import com.sebasgl1.streamiocast.data.VideoCodec
@@ -102,7 +104,11 @@ class StreamsViewModel(app: Application, handle: SavedStateHandle) : AndroidView
 }
 
 @Composable
-fun StreamsScreen(onBack: () -> Unit, vm: StreamsViewModel = viewModel()) {
+fun StreamsScreen(
+    onBack: () -> Unit,
+    onPlay: (PlaybackRequest) -> Unit,
+    vm: StreamsViewModel = viewModel(),
+) {
     val state by vm.state.collectAsStateWithLifecycle()
     var onlyCompatible by rememberSaveable { mutableStateOf(true) }
     var selected by remember { mutableStateOf<StreamResult?>(null) }
@@ -214,7 +220,14 @@ fun StreamsScreen(onBack: () -> Unit, vm: StreamsViewModel = viewModel()) {
     }
 
     selected?.let { result ->
-        StreamDialog(result) { selected = null }
+        StreamDialog(
+            item = result,
+            onPlay = {
+                selected = null
+                onPlay(result.toPlayback(vm.title))
+            },
+            onDismiss = { selected = null },
+        )
     }
 }
 
@@ -297,10 +310,11 @@ private fun StreamRow(item: StreamResult, onClick: () -> Unit) {
 }
 
 @Composable
-private fun StreamDialog(item: StreamResult, onDismiss: () -> Unit) {
+private fun StreamDialog(item: StreamResult, onPlay: () -> Unit, onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Cerrar") } },
+        confirmButton = { Button(onClick = onPlay) { Text("Reproducir aquí") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cerrar") } },
         title = { Text(item.cls.verdict.label) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -313,7 +327,8 @@ private fun StreamDialog(item: StreamResult, onDismiss: () -> Unit) {
                     Text("• $reason", style = MaterialTheme.typography.bodyMedium)
                 }
                 Text(
-                    text = "Reproducir y transmitir llegan en las etapas 3 y 4.",
+                    text = "En el celular se puede ver cualquier stream, incluso los no compatibles. " +
+                        "Transmitir al Chromecast llega en la etapa 4.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.secondary,
                 )

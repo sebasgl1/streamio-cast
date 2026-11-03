@@ -11,7 +11,8 @@ android {
 
     defaultConfig {
         applicationId = "com.sebasgl1.streamiocast"
-        minSdk = 26
+        // libtorrent4j 2.1.0-39 exige Android 9 (API 28) o superior.
+        minSdk = 28
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
@@ -67,6 +68,15 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("io.coil-kt:coil-compose:2.7.0")
+
+    // Reproductor
+    implementation("androidx.media3:media3-exoplayer:1.4.1")
+    implementation("androidx.media3:media3-ui:1.4.1")
+
+    // Motor de torrents (libtorrent) + binarios nativos para celulares ARM de 64 y 32 bits
+    implementation("org.libtorrent4j:libtorrent4j:2.1.0-39")
+    implementation("org.libtorrent4j:libtorrent4j-android-arm64:2.1.0-39")
+    implementation("org.libtorrent4j:libtorrent4j-android-arm:2.1.0-39")
 
     testImplementation("junit:junit:4.13.2")
 }
