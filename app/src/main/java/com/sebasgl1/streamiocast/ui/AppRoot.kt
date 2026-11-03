@@ -43,6 +43,9 @@ private val destinations = listOf(
 
 private fun detailRoute(item: MetaItem) = "detail/${Uri.encode(item.type)}/${Uri.encode(item.id)}"
 
+private fun streamsRoute(type: String, id: String, title: String) =
+    "streams/${Uri.encode(type)}/${Uri.encode(id)}/${encodeArg(title)}"
+
 private fun goTo(nav: NavHostController, route: String) {
     nav.navigate(route) {
         popUpTo(nav.graph.findStartDestination().id) { saveState = true }
@@ -123,7 +126,20 @@ fun AppRoot() {
                             navArgument("id") { type = NavType.StringType },
                         ),
                     ) {
-                        DetailScreen(onBack = { nav.popBackStack() })
+                        DetailScreen(
+                            onBack = { nav.popBackStack() },
+                            onStreams = { type, id, title -> nav.navigate(streamsRoute(type, id, title)) },
+                        )
+                    }
+                    composable(
+                        route = "streams/{type}/{id}/{title}",
+                        arguments = listOf(
+                            navArgument("type") { type = NavType.StringType },
+                            navArgument("id") { type = NavType.StringType },
+                            navArgument("title") { type = NavType.StringType },
+                        ),
+                    ) {
+                        StreamsScreen(onBack = { nav.popBackStack() })
                     }
                 }
             }

@@ -3,7 +3,6 @@
 package com.sebasgl1.streamiocast.ui
 
 import android.app.Application
-import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -47,7 +46,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -98,13 +96,17 @@ class DetailViewModel(app: Application, handle: SavedStateHandle) : AndroidViewM
 }
 
 @Composable
-fun DetailScreen(onBack: () -> Unit, vm: DetailViewModel = viewModel()) {
+fun DetailScreen(
+    onBack: () -> Unit,
+    onStreams: (type: String, id: String, title: String) -> Unit,
+    vm: DetailViewModel = viewModel(),
+) {
     val state by vm.state.collectAsStateWithLifecycle()
     val meta = state.meta
 
     Box(Modifier.fillMaxSize()) {
         when {
-            meta != null -> DetailContent(meta)
+            meta != null -> DetailContent(meta, onStreams)
 
             state.loading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
 
@@ -133,8 +135,7 @@ fun DetailScreen(onBack: () -> Unit, vm: DetailViewModel = viewModel()) {
 }
 
 @Composable
-private fun DetailContent(meta: MetaItem) {
-    val context = LocalContext.current
+private fun DetailContent(meta: MetaItem, onStreams: (type: String, id: String, title: String) -> Unit) {
     val seasons = remember(meta) { meta.videos.mapNotNull { it.season }.distinct().sorted() }
     var season by rememberSaveable(meta.id) {
         mutableStateOf(seasons.firstOrNull { it > 0 } ?: seasons.firstOrNull() ?: 0)
@@ -142,8 +143,15 @@ private fun DetailContent(meta: MetaItem) {
     val episodes = remember(meta, season) {
         meta.videos.filter { it.season == season }.sortedBy { it.episode ?: 0 }
     }
-    val comingSoon: () -> Unit = {
-        Toast.makeText(context, "Los streams llegan en la etapa 2", Toast.LENGTH_SHORT).show()
+    val openMovie: () -> Unit = {
+        onStreams(meta.type.ifEmpty { "movie" }, meta.id, meta.name)
+    }
+    val openEpisode: (Video) -> Unit = { video ->
+        onStreams(
+            meta.type.ifEmpty { "series" },
+            video.id,
+            "${meta.name} · T${video.season ?: 0} E${video.episode ?: 0}",
+        )
     }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -165,7 +173,7 @@ private fun DetailContent(meta: MetaItem) {
                         .fillMaxHeight(),
                     contentPadding = PaddingValues(start = 8.dp, top = 24.dp, end = 24.dp, bottom = 24.dp),
                 ) {
-                    episodesSection(seasons, season, { season = it }, episodes, comingSoon)
+                    episodesSection(seasons, season, { season = it }, episodes, openEpisode)
                 }
             }
         } else {
@@ -175,11 +183,11 @@ private fun DetailContent(meta: MetaItem) {
             ) {
                 item { InfoBlock(meta, wide) }
                 if (seasons.isNotEmpty()) {
-                    episodesSection(seasons, season, { season = it }, episodes, comingSoon)
+                    episodesSection(seasons, season, { season = it }, episodes, openEpisode)
                 } else {
                     item {
                         Button(
-                            onClick = comingSoon,
+                            onClick = openMovie,
                             modifier = Modifier.padding(top = 20.dp),
                         ) { Text("Ver streams") }
                     }
@@ -248,7 +256,7 @@ private fun LazyListScope.episodesSection(
     selected: Int,
     onSelect: (Int) -> Unit,
     episodes: List<Video>,
-    onEpisode: () -> Unit,
+    onEpisode: (Video) -> Unit,
 ) {
     item {
         Column {
@@ -271,7 +279,7 @@ private fun LazyListScope.episodesSection(
         }
     }
     items(episodes) { video ->
-        EpisodeRow(video, onEpisode)
+        EpisodeRow(video) { onEpisode(video) }
     }
 }
 

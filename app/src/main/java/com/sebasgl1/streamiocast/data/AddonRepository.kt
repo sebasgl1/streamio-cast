@@ -2,6 +2,9 @@ package com.sebasgl1.streamiocast.data
 
 import android.content.Context
 import android.net.Uri
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.serialization.builtins.ListSerializer
@@ -141,6 +144,45 @@ class AddonRepository(context: Context) {
             if (meta != null) return meta.let { if (it.type.isEmpty()) it.copy(type = type) else it }
         }
         return null
+    }
+
+    /**
+     * Pide los streams de [id] a todos los addons que los ofrezcan, los clasifica según tu Chromecast
+     * y los devuelve ordenados. Un addon caído no tumba al resto.
+     */
+    suspend fun fetchStreams(type: String, id: String): StreamsOutcome = coroutineScope {
+        val targets = _addons.value.filter { it.manifest.supports("stream", type, id) }
+
+        val responses = targets.map { addon ->
+            async {
+                val url = "${addon.baseUrl}/stream/${Uri.encode(type)}/${Uri.encode(id, ":")}.json"
+                val streams = runCatching {
+                    AppJson.decodeFromString<StreamsResponse>(http.get(url)).streams
+                }.getOrNull()
+                addon to streams
+            }
+        }.awaitAll()
+
+        val failures = responses
+            .filter { it.second == null }
+            .map { it.first.manifest.name.ifBlank { it.first.manifest.id } }
+
+        val results = responses
+            .flatMap { (addon, streams) ->
+                val addonName = addon.manifest.name.ifBlank { addon.manifest.id }
+                streams.orEmpty()
+                    .filter { it.infoHash != null || it.url != null }
+                    .map { stream ->
+                        val info = analyzeStream(stream)
+                        StreamResult(addonName, stream, info, classify(info))
+                    }
+            }
+            .distinctBy { r ->
+                r.stream.infoHash?.let { hash -> hash.lowercase() + ":" + r.stream.fileIdx } ?: r.stream.url
+            }
+            .sortedWith(streamComparator)
+
+        StreamsOutcome(results, failures, targets.size)
     }
 
     // --- Utilidades -----------------------------------------------------------------
