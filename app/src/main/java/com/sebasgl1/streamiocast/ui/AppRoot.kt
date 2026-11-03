@@ -31,7 +31,11 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import com.sebasgl1.streamiocast.CrashReporter
 import com.sebasgl1.streamiocast.StremioApp
 import com.sebasgl1.streamiocast.data.MetaItem
 import com.sebasgl1.streamiocast.player.PlayerScreen
@@ -65,6 +69,13 @@ private fun goTo(nav: NavHostController, route: String) {
 fun AppRoot() {
     val nav = rememberNavController()
     val app = LocalContext.current.applicationContext as StremioApp
+    var crashReport by remember { mutableStateOf(CrashReporter.pendingReport(app)) }
+    crashReport?.let { report ->
+        CrashDialog(report) {
+            CrashReporter.clear(app)
+            crashReport = null
+        }
+    }
     val entry by nav.currentBackStackEntryAsState()
     val route = entry?.destination?.route
     val showNavigation = destinations.any { it.route == route }

@@ -168,8 +168,17 @@ class LocalStreamServer {
         } catch (_: IOException) {
             // El cliente cerró la conexión (adelantar, pausar, cambiar de stream): es lo normal.
         } catch (_: InterruptedException) {
+        } catch (e: Throwable) {
+            // Cualquier otro error (por ejemplo, de libtorrent) corta solo esta conexión:
+            // un hilo del servidor jamás debe tumbar la app.
+            lastError = e
         }
     }
+
+    /** Último error inesperado al servir un recurso (para diagnóstico). */
+    @Volatile
+    var lastError: Throwable? = null
+        private set
 
     private fun sendBody(
         out: OutputStream,

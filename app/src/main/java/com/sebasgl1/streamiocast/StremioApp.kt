@@ -20,6 +20,7 @@ class StremioApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        CrashReporter.install(this)
         repo = AddonRepository(this)
     }
 }

@@ -92,7 +92,10 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                _ui.update { it.copy(phase = PlayerPhase.Failed(describe(error))) }
+                val detail = stremio.streamServer.lastError
+                    ?.let { "\n\nDetalle: ${it.javaClass.simpleName}: ${it.message}" }
+                    .orEmpty()
+                _ui.update { it.copy(phase = PlayerPhase.Failed(describe(error) + detail)) }
             }
         })
         start()

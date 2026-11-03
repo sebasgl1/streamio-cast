@@ -13,6 +13,7 @@ import kotlinx.coroutines.withContext
 import org.libtorrent4j.Priority
 import org.libtorrent4j.SessionHandle
 import org.libtorrent4j.SessionManager
+import org.libtorrent4j.SessionParams
 import org.libtorrent4j.Sha1Hash
 import org.libtorrent4j.TorrentFlags
 import org.libtorrent4j.TorrentHandle
@@ -47,7 +48,9 @@ data class TorrentStats(
  */
 class TorrentEngine(context: Context) {
 
-    private val saveDir = File(context.getExternalFilesDir(null) ?: context.filesDir, "torrents")
+    // Almacenamiento interno: el "externo" (Android/data) pasa por FUSE en muchos equipos
+    // y ahí libtorrent puede fallar al escribir.
+    private val saveDir = File(context.noBackupFilesDir, "torrents")
     private val session = SessionManager(false)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -56,7 +59,9 @@ class TorrentEngine(context: Context) {
             // Restos de una sesión anterior (la app se cerró a medias): fuera.
             saveDir.deleteRecursively()
             saveDir.mkdirs()
-            session.start()
+            // Disco "posix" en vez de archivos mapeados en memoria (mmap): la propia libtorrent4j
+            // lo recomienda en Android, donde el mmap provoca cierres nativos en algunos equipos.
+            session.start(SessionParams().apply { setPosixDiskIO() })
         }
     }
 
@@ -131,6 +136,9 @@ class TorrentEngine(context: Context) {
     fun close(stream: TorrentStream) {
         stream.close()
         scope.launch {
+            // Da tiempo a que los hilos del servidor que aún leen vean "cerrado" y salgan
+            // antes de destruir el torrent.
+            delay(2_000)
             runCatching {
                 if (stream.handle.isValid) session.remove(stream.handle, SessionHandle.DELETE_FILES)
             }
@@ -186,17 +194,24 @@ class TorrentStream internal constructor(
     }
 
     private fun awaitPiece(piece: Int, isCancelled: () -> Boolean) {
+        ensureOpen()
         if (piece != lastPrefetch) {
             lastPrefetch = piece
             prefetch(piece)
         }
-        if (handle.havePiece(piece)) return
         val limit = System.currentTimeMillis() + WAIT_LIMIT_MS
-        while (!handle.havePiece(piece)) {
-            if (closed || isCancelled()) throw InterruptedIOException("Lectura cancelada")
+        while (true) {
+            ensureOpen()
+            if (handle.havePiece(piece)) return
+            if (isCancelled()) throw InterruptedIOException("Lectura cancelada")
             if (System.currentTimeMillis() > limit) throw SocketTimeoutException("La pieza $piece no llegó a tiempo")
             Thread.sleep(150)
         }
+    }
+
+    /** Nunca llamar a libtorrent sobre un torrent que ya se cerró. */
+    private fun ensureOpen() {
+        if (closed || !handle.isValid) throw InterruptedIOException("El torrent ya se cerró")
     }
 
     /** Marca con urgencia creciente las piezas siguientes a la que se está leyendo. */
