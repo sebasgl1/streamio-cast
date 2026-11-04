@@ -68,8 +68,8 @@ data class StreamsState(
 
 class StreamsViewModel(app: Application, handle: SavedStateHandle) : AndroidViewModel(app) {
     private val repo = (app as StremioApp).repo
-    private val type: String = Uri.decode(handle["type"] ?: "")
-    private val id: String = Uri.decode(handle["id"] ?: "")
+    val type: String = Uri.decode(handle["type"] ?: "")
+    val id: String = Uri.decode(handle["id"] ?: "")
     val title: String = decodeArg(handle["title"] ?: "")
 
     private val _state = MutableStateFlow(StreamsState())
@@ -224,7 +224,7 @@ fun StreamsScreen(
             item = result,
             onPlay = {
                 selected = null
-                onPlay(result.toPlayback(vm.title))
+                onPlay(result.toPlayback(vm.title, vm.type, vm.id))
             },
             onDismiss = { selected = null },
         )

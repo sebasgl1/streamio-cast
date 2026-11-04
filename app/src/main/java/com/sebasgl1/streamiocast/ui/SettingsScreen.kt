@@ -234,5 +234,6 @@ fun SettingsScreen(vm: SettingsViewModel = viewModel()) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+        item { LanguagePrefs() }
     }
 }

@@ -8,7 +8,20 @@ data class StreamHints(
     val bingeGroup: String? = null,
     val filename: String? = null,
     val videoSize: Long? = null,
+    val videoHash: String? = null,
 )
+
+/** Subtítulo según el protocolo de addons (respuesta de /subtitles o dentro de un stream). */
+@Serializable
+data class SubtitleItem(
+    val id: String = "",
+    val url: String = "",
+    val lang: String = "",
+    val label: String? = null,
+)
+
+@Serializable
+data class SubtitlesResponse(val subtitles: List<SubtitleItem> = emptyList())
 
 /** Un stream según el protocolo de addons: torrent (infoHash) o enlace directo (url). */
 @Serializable
@@ -21,6 +34,7 @@ data class Stream(
     val url: String? = null,
     val behaviorHints: StreamHints? = null,
     val sources: List<String> = emptyList(),
+    val subtitles: List<SubtitleItem> = emptyList(),
 ) {
     val text: String
         get() = title ?: description ?: name ?: ""

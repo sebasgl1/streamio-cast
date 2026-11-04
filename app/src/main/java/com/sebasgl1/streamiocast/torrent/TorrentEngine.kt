@@ -3,6 +3,8 @@ package com.sebasgl1.streamiocast.torrent
 import android.content.Context
 import com.sebasgl1.streamiocast.stream.StreamSource
 import com.sebasgl1.streamiocast.stream.mimeTypeFor
+import com.sebasgl1.streamiocast.subtitles.HASH_CHUNK
+import com.sebasgl1.streamiocast.subtitles.openSubtitlesHash
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -229,6 +231,28 @@ class TorrentStream internal constructor(
             channel ?: if (file.exists()) RandomAccessFile(file, "r").channel.also { channel = it } else null
         } ?: return 0
         return ch.read(ByteBuffer.wrap(buffer, offset, len), position).coerceAtLeast(0)
+    }
+
+    /**
+     * Hash de OpenSubtitles del archivo (para subtítulos sincronizados). Bloquea hasta tener el
+     * principio y el final del archivo; se cancela interrumpiendo el hilo.
+     */
+    fun computeSubtitleHash(): String? {
+        if (length < HASH_CHUNK) return null
+        val head = readFully(0, HASH_CHUNK)
+        val tail = readFully(length - HASH_CHUNK, HASH_CHUNK)
+        return openSubtitlesHash(length, head, tail)
+    }
+
+    private fun readFully(position: Long, size: Int): ByteArray {
+        val out = ByteArray(size)
+        var done = 0
+        while (done < size) {
+            val n = read(position + done, out, done, size - done) { Thread.currentThread().isInterrupted }
+            if (n <= 0) throw IOException("Fin inesperado del archivo")
+            done += n
+        }
+        return out
     }
 
     fun close() {
