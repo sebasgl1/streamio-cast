@@ -56,7 +56,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
+import androidx.compose.ui.platform.LocalContext
 import com.sebasgl1.streamiocast.StremioApp
+import com.sebasgl1.streamiocast.history.WatchEntry
+import com.sebasgl1.streamiocast.history.WatchTarget
+import com.sebasgl1.streamiocast.history.resumePosition
 import com.sebasgl1.streamiocast.data.MetaItem
 import com.sebasgl1.streamiocast.data.Video
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -98,15 +102,17 @@ class DetailViewModel(app: Application, handle: SavedStateHandle) : AndroidViewM
 @Composable
 fun DetailScreen(
     onBack: () -> Unit,
-    onStreams: (type: String, id: String, title: String) -> Unit,
+    onStreams: (WatchTarget) -> Unit,
     vm: DetailViewModel = viewModel(),
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     val meta = state.meta
+    val app = LocalContext.current.applicationContext as StremioApp
+    val history by app.history.entries.collectAsStateWithLifecycle()
 
     Box(Modifier.fillMaxSize()) {
         when {
-            meta != null -> DetailContent(meta, onStreams)
+            meta != null -> DetailContent(meta, history, onStreams)
 
             state.loading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
 
@@ -135,7 +141,11 @@ fun DetailScreen(
 }
 
 @Composable
-private fun DetailContent(meta: MetaItem, onStreams: (type: String, id: String, title: String) -> Unit) {
+private fun DetailContent(
+    meta: MetaItem,
+    history: Map<String, WatchEntry>,
+    onStreams: (WatchTarget) -> Unit,
+) {
     val seasons = remember(meta) { meta.videos.mapNotNull { it.season }.distinct().sorted() }
     var season by rememberSaveable(meta.id) {
         mutableStateOf(seasons.firstOrNull { it > 0 } ?: seasons.firstOrNull() ?: 0)
@@ -144,13 +154,28 @@ private fun DetailContent(meta: MetaItem, onStreams: (type: String, id: String, 
         meta.videos.filter { it.season == season }.sortedBy { it.episode ?: 0 }
     }
     val openMovie: () -> Unit = {
-        onStreams(meta.type.ifEmpty { "movie" }, meta.id, meta.name)
+        onStreams(
+            WatchTarget(
+                videoId = meta.id,
+                metaId = meta.id,
+                type = meta.type.ifEmpty { "movie" },
+                name = meta.name,
+                poster = meta.poster,
+            ),
+        )
     }
     val openEpisode: (Video) -> Unit = { video ->
         onStreams(
-            meta.type.ifEmpty { "series" },
-            video.id,
-            "${meta.name} · T${video.season ?: 0} E${video.episode ?: 0}",
+            WatchTarget(
+                videoId = video.id,
+                metaId = meta.id,
+                type = meta.type.ifEmpty { "series" },
+                name = meta.name,
+                poster = meta.poster,
+                season = video.season ?: 0,
+                episode = video.episode ?: 0,
+                episodeTitle = video.label,
+            ),
         )
     }
 
@@ -173,7 +198,7 @@ private fun DetailContent(meta: MetaItem, onStreams: (type: String, id: String, 
                         .fillMaxHeight(),
                     contentPadding = PaddingValues(start = 8.dp, top = 24.dp, end = 24.dp, bottom = 24.dp),
                 ) {
-                    episodesSection(seasons, season, { season = it }, episodes, openEpisode)
+                    episodesSection(seasons, season, { season = it }, episodes, history, openEpisode)
                 }
             }
         } else {
@@ -183,13 +208,16 @@ private fun DetailContent(meta: MetaItem, onStreams: (type: String, id: String, 
             ) {
                 item { InfoBlock(meta, wide) }
                 if (seasons.isNotEmpty()) {
-                    episodesSection(seasons, season, { season = it }, episodes, openEpisode)
+                    episodesSection(seasons, season, { season = it }, episodes, history, openEpisode)
                 } else {
                     item {
-                        Button(
-                            onClick = openMovie,
-                            modifier = Modifier.padding(top = 20.dp),
-                        ) { Text("Ver streams") }
+                        val entry = history[meta.id]
+                        Column(Modifier.padding(top = 20.dp)) {
+                            WatchProgress(entry, Modifier.padding(bottom = 10.dp))
+                            Button(onClick = openMovie) {
+                                Text(if (resumePosition(entry) != null) "Continuar" else "Ver streams")
+                            }
+                        }
                     }
                 }
             }
@@ -256,6 +284,7 @@ private fun LazyListScope.episodesSection(
     selected: Int,
     onSelect: (Int) -> Unit,
     episodes: List<Video>,
+    history: Map<String, WatchEntry>,
     onEpisode: (Video) -> Unit,
 ) {
     item {
@@ -279,12 +308,12 @@ private fun LazyListScope.episodesSection(
         }
     }
     items(episodes) { video ->
-        EpisodeRow(video) { onEpisode(video) }
+        EpisodeRow(video, history[video.id]) { onEpisode(video) }
     }
 }
 
 @Composable
-private fun EpisodeRow(video: Video, onClick: () -> Unit) {
+private fun EpisodeRow(video: Video, entry: WatchEntry?, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -317,6 +346,7 @@ private fun EpisodeRow(video: Video, onClick: () -> Unit) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            WatchProgress(entry, Modifier.padding(top = 4.dp))
         }
     }
 }

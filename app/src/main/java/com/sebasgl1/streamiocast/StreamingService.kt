@@ -80,6 +80,13 @@ class StreamingService : Service() {
         }
     }
 
+    /** Quitaste la app de recientes: se cierra la reproducción y se deja de descargar. */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        (application as? StremioApp)?.closeSession()
+        stopSelf()
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onDestroy() {
         runCatching { wakeLock?.release() }
         runCatching { wifiLock?.release() }

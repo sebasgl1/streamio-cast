@@ -31,7 +31,10 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
+import com.sebasgl1.streamiocast.data.AppJson
+import com.sebasgl1.streamiocast.history.WatchTarget
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
@@ -50,8 +53,8 @@ private val destinations = listOf(
 
 private fun detailRoute(item: MetaItem) = "detail/${Uri.encode(item.type)}/${Uri.encode(item.id)}"
 
-private fun streamsRoute(type: String, id: String, title: String) =
-    "streams/${Uri.encode(type)}/${Uri.encode(id)}/${encodeArg(title)}"
+private fun streamsRoute(target: WatchTarget) =
+    "streams/${encodeArg(AppJson.encodeToString(WatchTarget.serializer(), target))}"
 
 private fun goTo(nav: NavHostController, route: String) {
     nav.navigate(route) {
@@ -143,16 +146,12 @@ fun AppRoot() {
                     ) {
                         DetailScreen(
                             onBack = { nav.popBackStack() },
-                            onStreams = { type, id, title -> nav.navigate(streamsRoute(type, id, title)) },
+                            onStreams = { target -> nav.navigate(streamsRoute(target)) },
                         )
                     }
                     composable(
-                        route = "streams/{type}/{id}/{title}",
-                        arguments = listOf(
-                            navArgument("type") { type = NavType.StringType },
-                            navArgument("id") { type = NavType.StringType },
-                            navArgument("title") { type = NavType.StringType },
-                        ),
+                        route = "streams/{target}",
+                        arguments = listOf(navArgument("target") { type = NavType.StringType }),
                     ) {
                         StreamsScreen(
                             onBack = { nav.popBackStack() },
@@ -167,6 +166,14 @@ fun AppRoot() {
                     }
                 }
             }
+        }
+    }
+
+    // Si Android recreó la pantalla con un vídeo en curso (por ejemplo, al volver desde una
+    // notificación), se vuelve directo al reproductor.
+    LaunchedEffect(Unit) {
+        if (app.session?.isOpen == true && nav.currentDestination?.route != "player") {
+            nav.navigate("player")
         }
     }
 }

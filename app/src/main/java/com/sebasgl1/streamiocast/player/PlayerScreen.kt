@@ -7,6 +7,7 @@ import android.app.Activity
 import android.content.pm.PackageManager
 import android.os.Build
 import android.view.View
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.Slider
@@ -88,7 +89,18 @@ private val SIZE_SP = intArrayOf(16, 20, 26)
 
 @AndroidOptIn(UnstableApi::class)
 @Composable
-fun PlayerScreen(onBack: () -> Unit, vm: PlayerViewModel = viewModel()) {
+fun PlayerScreen(onBack: () -> Unit, model: PlayerViewModel = viewModel()) {
+    val vm = model.session
+    if (vm == null) {
+        NoSession(onBack)
+        return
+    }
+    // Salir del reproductor (botón o gesto "atrás") sí cierra la reproducción.
+    val close: () -> Unit = {
+        model.close()
+        onBack()
+    }
+    BackHandler(onBack = close)
     val ui by vm.ui.collectAsStateWithLifecycle()
     var controlsVisible by remember { mutableStateOf(true) }
     var menuOpen by remember { mutableStateOf(false) }
@@ -196,7 +208,7 @@ fun PlayerScreen(onBack: () -> Unit, vm: PlayerViewModel = viewModel()) {
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 Text(phase.message, color = Color.White, textAlign = TextAlign.Center)
-                Button(onClick = onBack) { Text("Volver a los streams") }
+                Button(onClick = close) { Text("Volver a los streams") }
             }
         }
 
@@ -204,10 +216,24 @@ fun PlayerScreen(onBack: () -> Unit, vm: PlayerViewModel = viewModel()) {
             TopBar(
                 title = ui.title,
                 showTracks = ui.phase is PlayerPhase.Playing,
-                onBack = onBack,
+                onBack = close,
                 onTracks = { menuOpen = true },
                 modifier = Modifier.align(Alignment.TopCenter),
             )
+        }
+
+        ui.resumedFromMs?.let { at ->
+            Row(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 72.dp)
+                    .background(Color.Black.copy(alpha = 0.7f), RoundedCornerShape(20.dp))
+                    .padding(start = 16.dp, end = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Retomando en ${formatTime(at)}", color = Color.White)
+                TextButton(onClick = vm::restartFromBeginning) { Text("Desde el inicio") }
+            }
         }
 
         ui.castMessage?.let { message ->
@@ -275,7 +301,7 @@ private fun TopBar(
 
 /** Dibuja los subtítulos externos (los de los addons), con retraso y tamaño ajustables. */
 @Composable
-private fun SubtitleOverlay(vm: PlayerViewModel, size: Int, raised: Boolean, modifier: Modifier) {
+private fun SubtitleOverlay(vm: PlaybackSession, size: Int, raised: Boolean, modifier: Modifier) {
     var text by remember { mutableStateOf("") }
     LaunchedEffect(vm) {
         while (true) {
@@ -299,7 +325,7 @@ private fun SubtitleOverlay(vm: PlayerViewModel, size: Int, raised: Boolean, mod
 }
 
 @Composable
-private fun TracksSheet(ui: PlayerUi, vm: PlayerViewModel, onDismiss: () -> Unit) {
+private fun TracksSheet(ui: PlayerUi, vm: PlaybackSession, onDismiss: () -> Unit) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val pref = remember { vm.preferredSubtitleLang() }
     val langs = remember(ui.externalSubs) {
@@ -444,9 +470,35 @@ private fun OptionRow(label: String, selected: Boolean, onClick: () -> Unit) {
     }
 }
 
+/** La sesión ya no existe (por ejemplo, la app se reinició): hay que volver a elegir el stream. */
+@Composable
+private fun NoSession(onBack: () -> Unit) {
+    BackHandler(onBack = onBack)
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(Color.Black),
+    ) {
+        Column(
+            modifier = Modifier
+                .align(Alignment.Center)
+                .padding(32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Text(
+                text = "Esta reproducción ya terminó. Vuelve a elegir el stream; seguirá donde ibas.",
+                color = Color.White,
+                textAlign = TextAlign.Center,
+            )
+            Button(onClick = onBack) { Text("Volver") }
+        }
+    }
+}
+
 /** Control remoto del Chromecast: el vídeo se ve en el televisor y aquí se maneja. */
 @Composable
-private fun CastPanel(ui: PlayerUi, cast: CastUi, vm: PlayerViewModel, modifier: Modifier) {
+private fun CastPanel(ui: PlayerUi, cast: CastUi, vm: PlaybackSession, modifier: Modifier) {
     var dragging by remember { mutableStateOf<Float?>(null) }
     Column(
         modifier = modifier
@@ -498,7 +550,8 @@ private fun CastPanel(ui: PlayerUi, cast: CastUi, vm: PlayerViewModel, modifier:
             Text("Dejar de transmitir y seguir en el celular", color = Color.White)
         }
         Text(
-            text = "Mantén la app abierta (puedes apagar la pantalla): el celular le pasa el vídeo al televisor.",
+            text = "Puedes apagar la pantalla o usar otras apps: el celular le sigue pasando el vídeo al " +
+                "televisor. Para terminar, sal con \"atrás\".",
             color = Color.White.copy(alpha = 0.5f),
             style = MaterialTheme.typography.bodySmall,
             textAlign = TextAlign.Center,

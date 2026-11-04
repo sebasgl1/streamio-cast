@@ -26,7 +26,10 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalContext
 import com.sebasgl1.streamiocast.StremioApp
+import com.sebasgl1.streamiocast.history.continueWatching
 import com.sebasgl1.streamiocast.data.Addon
 import com.sebasgl1.streamiocast.data.MetaItem
 import com.sebasgl1.streamiocast.data.hasResource
@@ -120,13 +123,21 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 @Composable
 fun HomeScreen(onOpen: (MetaItem) -> Unit, vm: HomeViewModel = viewModel()) {
     val state by vm.state.collectAsStateWithLifecycle()
+    val app = LocalContext.current.applicationContext as StremioApp
+    val history by app.history.entries.collectAsStateWithLifecycle()
+    val continueList = remember(history) { continueWatching(history.values) }
 
     Box(Modifier.fillMaxSize()) {
         when {
-            state.rows.isNotEmpty() -> LazyColumn(
+            state.rows.isNotEmpty() || continueList.isNotEmpty() -> LazyColumn(
                 contentPadding = PaddingValues(vertical = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(20.dp),
             ) {
+                if (continueList.isNotEmpty()) {
+                    item(key = "continuar") {
+                        ContinueRow(continueList, onOpen = onOpen, onRemove = { app.history.hideMeta(it) })
+                    }
+                }
                 items(state.rows, key = { it.order }) { row ->
                     Column {
                         Text(

@@ -48,6 +48,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.sebasgl1.streamiocast.StremioApp
+import com.sebasgl1.streamiocast.data.AppJson
+import com.sebasgl1.streamiocast.history.WatchTarget
 import com.sebasgl1.streamiocast.player.PlaybackRequest
 import com.sebasgl1.streamiocast.player.toPlayback
 import com.sebasgl1.streamiocast.data.StreamResult
@@ -68,9 +70,12 @@ data class StreamsState(
 
 class StreamsViewModel(app: Application, handle: SavedStateHandle) : AndroidViewModel(app) {
     private val repo = (app as StremioApp).repo
-    val type: String = Uri.decode(handle["type"] ?: "")
-    val id: String = Uri.decode(handle["id"] ?: "")
-    val title: String = decodeArg(handle["title"] ?: "")
+    val target: WatchTarget = runCatching {
+        AppJson.decodeFromString(WatchTarget.serializer(), decodeArg(handle["target"] ?: ""))
+    }.getOrElse { WatchTarget(videoId = "", metaId = "", type = "movie", name = "Streams") }
+    val type: String = target.type
+    val id: String = target.videoId
+    val title: String = target.displayTitle
 
     private val _state = MutableStateFlow(StreamsState())
     val state: StateFlow<StreamsState> = _state.asStateFlow()
@@ -224,7 +229,7 @@ fun StreamsScreen(
             item = result,
             onPlay = {
                 selected = null
-                onPlay(result.toPlayback(vm.title, vm.type, vm.id))
+                onPlay(result.toPlayback(vm.target))
             },
             onDismiss = { selected = null },
         )
