@@ -41,6 +41,19 @@ data class PieceSpan(val fileOffset: Long, val fileLength: Long, val pieceLength
     }
 }
 
+/** "2.1 GB", "850 MB". */
+fun formatBytes(bytes: Long): String {
+    val gb = bytes / (1024.0 * 1024 * 1024)
+    if (gb >= 1) return String.format(java.util.Locale.US, "%.1f GB", gb)
+    val mb = bytes / (1024.0 * 1024)
+    return String.format(java.util.Locale.US, "%.0f MB", mb)
+}
+
+/** Espacio que se deja libre además del vídeo, para no dejar el celular sin almacenamiento. */
+const val STORAGE_MARGIN = 300L * 1024 * 1024
+
+fun hasRoomFor(fileSize: Long, freeSpace: Long): Boolean = freeSpace >= fileSize + STORAGE_MARGIN
+
 private val DEFAULT_TRACKERS = listOf(
     "udp://tracker.opentrackr.org:1337/announce",
     "udp://open.demonii.com:1337/announce",

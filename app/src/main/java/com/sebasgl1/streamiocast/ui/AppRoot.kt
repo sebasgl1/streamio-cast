@@ -32,6 +32,8 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import com.sebasgl1.streamiocast.player.sameStreamAs
 import androidx.compose.runtime.mutableStateOf
 import com.sebasgl1.streamiocast.data.AppJson
 import com.sebasgl1.streamiocast.history.WatchTarget
@@ -129,7 +131,10 @@ fun AppRoot() {
                         .fillMaxHeight(),
                 ) {
                     composable("home") {
-                        HomeScreen(onOpen = { nav.navigate(detailRoute(it)) })
+                        HomeScreen(
+                            onOpen = { nav.navigate(detailRoute(it)) },
+                            onResumePlayer = { nav.navigate("player") },
+                        )
                     }
                     composable("search") {
                         SearchScreen(onOpen = { nav.navigate(detailRoute(it)) })
@@ -156,7 +161,11 @@ fun AppRoot() {
                         StreamsScreen(
                             onBack = { nav.popBackStack() },
                             onPlay = { request ->
-                                app.pendingPlayback = request
+                                // El mismo stream que ya suena (por ejemplo, en el TV): se vuelve a él.
+                                val current = app.session
+                                if (current == null || !current.isOpen || !current.request.sameStreamAs(request)) {
+                                    app.pendingPlayback = request
+                                }
                                 nav.navigate("player")
                             },
                         )
@@ -169,9 +178,10 @@ fun AppRoot() {
         }
     }
 
-    // Si Android recreó la pantalla con un vídeo en curso (por ejemplo, al volver desde una
-    // notificación), se vuelve directo al reproductor.
-    LaunchedEffect(Unit) {
+    // Al tocar la notificación, o si Android recreó la pantalla con un vídeo en curso,
+    // se vuelve directo al reproductor.
+    val openRequests by app.openPlayerRequests.collectAsState()
+    LaunchedEffect(openRequests) {
         if (app.session?.isOpen == true && nav.currentDestination?.route != "player") {
             nav.navigate("player")
         }

@@ -17,6 +17,8 @@ data class PlaybackRequest(
     val videoHash: String? = null,
     val videoSize: Long? = null,
     val streamSubtitles: List<SubtitleItem> = emptyList(),
+    /** Grupo del stream ("torrentio|1080p|WEB-DL"): para elegir el del siguiente episodio. */
+    val bingeGroup: String? = null,
 ) {
     val title: String
         get() = target.displayTitle
@@ -39,7 +41,15 @@ fun StreamResult.toPlayback(target: WatchTarget) = PlaybackRequest(
     videoHash = stream.behaviorHints?.videoHash,
     videoSize = stream.behaviorHints?.videoSize,
     streamSubtitles = stream.subtitles,
+    bingeGroup = stream.behaviorHints?.bingeGroup,
 )
+
+/** ¿Es el mismo stream (mismo torrent y archivo, o mismo enlace)? */
+fun PlaybackRequest.sameStreamAs(other: PlaybackRequest): Boolean =
+    target.videoId == other.target.videoId &&
+        infoHash?.lowercase() == other.infoHash?.lowercase() &&
+        fileIdx == other.fileIdx &&
+        url == other.url
 
 sealed interface PlayerPhase {
     data class Preparing(val message: String) : PlayerPhase
@@ -77,4 +87,11 @@ data class PlayerUi(
     val castMessage: String? = null,
     /** Posición desde la que se retomó (para el aviso "Desde el inicio"). */
     val resumedFromMs: Long? = null,
+    /** ¿El reproductor del celular está sonando? */
+    val localPlaying: Boolean = false,
+    /** "T1 E3 · Título" si hay siguiente episodio. */
+    val nextUp: String? = null,
+    /** Segundos para pasar solo al siguiente episodio. */
+    val nextCountdown: Int? = null,
+    val nextLoading: Boolean = false,
 )

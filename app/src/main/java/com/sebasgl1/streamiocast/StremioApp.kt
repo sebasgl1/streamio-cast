@@ -9,6 +9,8 @@ import com.sebasgl1.streamiocast.player.PlaybackSession
 import com.sebasgl1.streamiocast.stream.LocalStreamServer
 import com.sebasgl1.streamiocast.subtitles.SubtitleRepository
 import com.sebasgl1.streamiocast.torrent.TorrentEngine
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 
 class StremioApp : Application() {
     lateinit var repo: AddonRepository
@@ -26,8 +28,19 @@ class StremioApp : Application() {
     var pendingPlayback: PlaybackRequest? = null
 
     /** La reproducción en curso. Vive aquí (no en la pantalla) para sobrevivir a que se recree. */
-    var session: PlaybackSession? = null
-        private set
+    private val _session = MutableStateFlow<PlaybackSession?>(null)
+    val sessionFlow: StateFlow<PlaybackSession?> = _session
+
+    val session: PlaybackSession?
+        get() = _session.value
+
+    /** Cada vez que la notificación pide abrir el reproductor, sube este contador. */
+    private val _openPlayer = MutableStateFlow(0)
+    val openPlayerRequests: StateFlow<Int> = _openPlayer
+
+    fun requestOpenPlayer() {
+        _openPlayer.value += 1
+    }
 
     /** La sesión abierta, o una nueva con el stream pendiente. Solo desde el hilo principal. */
     fun obtainSession(): PlaybackSession? {
@@ -38,12 +51,19 @@ class StremioApp : Application() {
         // Se eligió otro stream: el anterior se cierra.
         current?.close()
         pendingPlayback = null
-        return PlaybackSession(this, pending).also { session = it }
+        return PlaybackSession(this, pending).also { _session.value = it }
+    }
+
+    /** Siguiente episodio: reemplaza la sesión actual (la pantalla se engancha sola a la nueva). */
+    fun startNext(request: PlaybackRequest) {
+        val wasAttached = session?.attached == true
+        pendingPlayback = request
+        obtainSession()?.attached = wasAttached
     }
 
     fun closeSession() {
         session?.close()
-        session = null
+        _session.value = null
     }
 
     override fun onCreate() {

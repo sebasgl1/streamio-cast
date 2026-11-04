@@ -121,7 +121,11 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 }
 
 @Composable
-fun HomeScreen(onOpen: (MetaItem) -> Unit, vm: HomeViewModel = viewModel()) {
+fun HomeScreen(
+    onOpen: (MetaItem) -> Unit,
+    onResumePlayer: () -> Unit,
+    vm: HomeViewModel = viewModel(),
+) {
     val state by vm.state.collectAsStateWithLifecycle()
     val app = LocalContext.current.applicationContext as StremioApp
     val history by app.history.entries.collectAsStateWithLifecycle()
@@ -135,7 +139,19 @@ fun HomeScreen(onOpen: (MetaItem) -> Unit, vm: HomeViewModel = viewModel()) {
             ) {
                 if (continueList.isNotEmpty()) {
                     item(key = "continuar") {
-                        ContinueRow(continueList, onOpen = onOpen, onRemove = { app.history.hideMeta(it) })
+                        ContinueRow(
+                            entries = continueList,
+                            onOpen = { meta ->
+                                // Si eso es lo que está sonando en el TV, se vuelve al reproductor.
+                                val session = app.session
+                                if (session != null && session.isOpen && session.request.target.metaId == meta.id) {
+                                    onResumePlayer()
+                                } else {
+                                    onOpen(meta)
+                                }
+                            },
+                            onRemove = { app.history.hideMeta(it) },
+                        )
                     }
                 }
                 items(state.rows, key = { it.order }) { row ->

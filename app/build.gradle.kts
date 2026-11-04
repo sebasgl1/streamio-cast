@@ -15,8 +15,16 @@ android {
         minSdk = 28
         targetSdk = 35
         versionCode = 1
-        versionName = "0.1.0"
+        versionName = "0.2.0"
+
+        // Solo celulares de 64 bits (todos los de los últimos años): APK mucho más liviano.
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
     }
+
+    // Con el NDK disponible, Gradle quita los símbolos de depuración de las librerías nativas.
+    System.getenv("ANDROID_NDK_LATEST_HOME")?.let { ndkVersion = java.io.File(it).name }
 
     // Firma fija para que cada APK nuevo se pueda instalar encima del anterior.
     signingConfigs {
@@ -29,8 +37,17 @@ android {
     }
 
     buildTypes {
+        // El APK que se publica es el "debug": R8 quita el código que no se usa (sin ofuscar,
+        // para que los informes de error sigan siendo legibles).
+        debug {
+            isMinifyEnabled = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
+        }
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
@@ -77,11 +94,12 @@ dependencies {
     implementation("com.google.android.gms:play-services-cast-framework:21.5.0")
     implementation("androidx.mediarouter:mediarouter:1.7.0")
     implementation("androidx.appcompat:appcompat:1.7.0")
+    // Estilo de notificación multimedia (botones en la vista compacta y la pantalla de bloqueo)
+    implementation("androidx.media:media:1.7.0")
 
-    // Motor de torrents (libtorrent) + binarios nativos para celulares ARM de 64 y 32 bits
+    // Motor de torrents (libtorrent) + binario nativo para celulares ARM de 64 bits
     implementation("org.libtorrent4j:libtorrent4j:2.1.0-39")
     implementation("org.libtorrent4j:libtorrent4j-android-arm64:2.1.0-39")
-    implementation("org.libtorrent4j:libtorrent4j-android-arm:2.1.0-39")
 
     testImplementation("junit:junit:4.13.2")
 }

@@ -22,13 +22,17 @@ data class CastUi(
     val durationMs: Long = 0,
 )
 
+/** Una pista de subtítulos para el televisor (el mismo subtítulo con distinto retraso). */
+data class CastSubtitleTrack(val id: Long, val url: String)
+
 /** Lo que el Chromecast debe reproducir. */
 data class CastMedia(
     val url: String,
     val contentType: String,
     val title: String,
     val startAtMs: Long,
-    val subtitleUrl: String?,
+    val subtitleTracks: List<CastSubtitleTrack>,
+    val activeSubtitleId: Long?,
     val subtitleLang: String?,
     val subtitleScale: Float,
 )
@@ -42,7 +46,7 @@ class CastHandoff(context: Context, private val events: Events) {
     interface Events {
         fun onConnected(device: String)
         fun onDisconnected(lastPositionMs: Long)
-        fun onStatus(state: String, playing: Boolean, failed: Boolean)
+        fun onStatus(state: String, playing: Boolean, failed: Boolean, finished: Boolean)
         fun onProgress(positionMs: Long, durationMs: Long)
         fun onConnectFailed()
     }
@@ -53,6 +57,10 @@ class CastHandoff(context: Context, private val events: Events) {
 
     val isConnected: Boolean
         get() = session?.isConnected == true
+
+    /** ¿Hay un Chromecast conectado aunque esta sesión aún no lo haya tomado? */
+    fun hasConnectedDevice(): Boolean =
+        isConnected || castContext?.sessionManager?.currentCastSession?.isConnected == true
 
     private val remoteCallback = object : RemoteMediaClient.Callback() {
         override fun onStatusUpdated() = publishStatus()
@@ -117,21 +125,25 @@ class CastHandoff(context: Context, private val events: Events) {
             .setContentType(media.contentType)
             .setMetadata(metadata)
             .setTextTrackStyle(textStyle(media.subtitleScale))
-        if (media.subtitleUrl != null) {
-            val track = MediaTrack.Builder(SUBTITLE_TRACK_ID, MediaTrack.TYPE_TEXT)
-                .setName("Subtítulos")
-                .setSubtype(MediaTrack.SUBTYPE_SUBTITLES)
-                .setContentId(media.subtitleUrl)
-                .setContentType("text/vtt")
-                .setLanguage(media.subtitleLang ?: "es")
-                .build()
-            builder.setMediaTracks(listOf(track))
+        if (media.subtitleTracks.isNotEmpty()) {
+            builder.setMediaTracks(
+                media.subtitleTracks.map { track ->
+                    MediaTrack.Builder(track.id, MediaTrack.TYPE_TEXT)
+                        .setName("Subtítulos")
+                        .setSubtype(MediaTrack.SUBTYPE_SUBTITLES)
+                        .setContentId(track.url)
+                        .setContentType("text/vtt")
+                        .setLanguage(media.subtitleLang ?: "es")
+                        .build()
+                },
+            )
         }
+        val active = media.activeSubtitleId
         val request = MediaLoadRequestData.Builder()
             .setMediaInfo(builder.build())
             .setAutoplay(true)
             .setCurrentTime(media.startAtMs)
-            .apply { if (media.subtitleUrl != null) setActiveTrackIds(longArrayOf(SUBTITLE_TRACK_ID)) }
+            .apply { if (active != null) setActiveTrackIds(longArrayOf(active)) }
             .build()
         lastPositionMs = media.startAtMs
         remote.load(request)
@@ -150,6 +162,11 @@ class CastHandoff(context: Context, private val events: Events) {
 
     fun setSubtitleScale(scale: Float) {
         session?.remoteMediaClient?.setTextTrackStyle(textStyle(scale))
+    }
+
+    /** Cambia de pista de subtítulos sin recargar el vídeo (así se ajusta el retraso). */
+    fun activateTrack(id: Long) {
+        session?.remoteMediaClient?.setActiveMediaTracks(longArrayOf(id))
     }
 
     fun hideSubtitles() {
@@ -176,8 +193,9 @@ class CastHandoff(context: Context, private val events: Events) {
 
     private fun publishStatus() {
         val status = session?.remoteMediaClient?.mediaStatus ?: return
-        val failed = status.playerState == MediaStatus.PLAYER_STATE_IDLE &&
-            status.idleReason == MediaStatus.IDLE_REASON_ERROR
+        val idle = status.playerState == MediaStatus.PLAYER_STATE_IDLE
+        val failed = idle && status.idleReason == MediaStatus.IDLE_REASON_ERROR
+        val finished = idle && status.idleReason == MediaStatus.IDLE_REASON_FINISHED
         val state = when (status.playerState) {
             MediaStatus.PLAYER_STATE_PLAYING -> "Reproduciendo"
             MediaStatus.PLAYER_STATE_PAUSED -> "En pausa"
@@ -189,7 +207,7 @@ class CastHandoff(context: Context, private val events: Events) {
             }
             else -> ""
         }
-        events.onStatus(state, status.playerState == MediaStatus.PLAYER_STATE_PLAYING, failed)
+        events.onStatus(state, status.playerState == MediaStatus.PLAYER_STATE_PLAYING, failed, finished)
     }
 
     private fun textStyle(scale: Float) = TextTrackStyle().apply {
@@ -198,9 +216,5 @@ class CastHandoff(context: Context, private val events: Events) {
         backgroundColor = 0x80000000.toInt()
         edgeType = TextTrackStyle.EDGE_TYPE_DROP_SHADOW
         edgeColor = 0xFF000000.toInt()
-    }
-
-    companion object {
-        const val SUBTITLE_TRACK_ID = 1L
     }
 }

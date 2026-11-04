@@ -90,14 +90,20 @@ private val SIZE_SP = intArrayOf(16, 20, 26)
 @AndroidOptIn(UnstableApi::class)
 @Composable
 fun PlayerScreen(onBack: () -> Unit, model: PlayerViewModel = viewModel()) {
-    val vm = model.session
+    val current by model.session.collectAsStateWithLifecycle()
+    val vm = current
     if (vm == null) {
         NoSession(onBack)
         return
     }
-    // Salir del reproductor (botón o gesto "atrás") sí cierra la reproducción.
+    // Mientras está a la vista, la sesión sabe que alguien mira el celular.
+    DisposableEffect(vm) {
+        vm.attached = true
+        onDispose { vm.attached = false }
+    }
+    // Salir: si se está transmitiendo, el TV sigue y vuelves a la app; si no, se cierra todo.
     val close: () -> Unit = {
-        model.close()
+        if (!vm.isCasting) model.close()
         onBack()
     }
     BackHandler(onBack = close)
@@ -110,8 +116,8 @@ fun PlayerScreen(onBack: () -> Unit, model: PlayerViewModel = viewModel()) {
     // Android 13+: permiso para la notificación que mantiene viva la descarga.
     val context = LocalContext.current
     val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
-    LaunchedEffect(ui.isTorrent) {
-        if (ui.isTorrent && Build.VERSION.SDK_INT >= 33 &&
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
             PackageManager.PERMISSION_GRANTED
         ) {
@@ -234,6 +240,28 @@ fun PlayerScreen(onBack: () -> Unit, model: PlayerViewModel = viewModel()) {
                 Text("Retomando en ${formatTime(at)}", color = Color.White)
                 TextButton(onClick = vm::restartFromBeginning) { Text("Desde el inicio") }
             }
+        }
+
+        // Siguiente episodio: aparece en el último minuto y cuenta 10 s al terminar.
+        var nearEnd by remember(vm) { mutableStateOf(false) }
+        LaunchedEffect(vm, ui.nextUp) {
+            while (ui.nextUp != null) {
+                nearEnd = vm.nearEnd()
+                delay(1000)
+            }
+        }
+        val nextLabel = ui.nextUp
+        if (nextLabel != null && (nearEnd || ui.nextCountdown != null || ui.nextLoading)) {
+            NextUpCard(
+                label = nextLabel,
+                countdown = ui.nextCountdown,
+                loading = ui.nextLoading,
+                onPlay = vm::playNext,
+                onCancel = vm::cancelNext,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 16.dp, bottom = 110.dp),
+            )
         }
 
         ui.castMessage?.let { message ->
@@ -470,6 +498,47 @@ private fun OptionRow(label: String, selected: Boolean, onClick: () -> Unit) {
     }
 }
 
+@Composable
+private fun NextUpCard(
+    label: String,
+    countdown: Int?,
+    loading: Boolean,
+    onPlay: () -> Unit,
+    onCancel: () -> Unit,
+    modifier: Modifier,
+) {
+    Column(
+        modifier = modifier
+            .width(280.dp)
+            .background(Color.Black.copy(alpha = 0.8f), RoundedCornerShape(12.dp))
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text("Siguiente episodio", color = Color.White.copy(alpha = 0.7f), style = MaterialTheme.typography.labelMedium)
+        Text(
+            text = label,
+            color = Color.White,
+            style = MaterialTheme.typography.bodyMedium,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Button(onClick = onPlay, enabled = !loading) {
+                Text(
+                    when {
+                        loading -> "Buscando stream…"
+                        countdown != null -> "Ver ahora ($countdown)"
+                        else -> "Ver ahora"
+                    },
+                )
+            }
+            if (countdown != null) {
+                TextButton(onClick = onCancel) { Text("Cancelar", color = Color.White) }
+            }
+        }
+    }
+}
+
 /** La sesión ya no existe (por ejemplo, la app se reinició): hay que volver a elegir el stream. */
 @Composable
 private fun NoSession(onBack: () -> Unit) {
@@ -550,8 +619,8 @@ private fun CastPanel(ui: PlayerUi, cast: CastUi, vm: PlaybackSession, modifier:
             Text("Dejar de transmitir y seguir en el celular", color = Color.White)
         }
         Text(
-            text = "Puedes apagar la pantalla o usar otras apps: el celular le sigue pasando el vídeo al " +
-                "televisor. Para terminar, sal con \"atrás\".",
+            text = "Puedes volver a la app con \"atrás\", usar otras apps o apagar la pantalla: el TV sigue. " +
+                "Para terminar, usa \"Dejar de transmitir\" o Detener en la notificación.",
             color = Color.White.copy(alpha = 0.5f),
             style = MaterialTheme.typography.bodySmall,
             textAlign = TextAlign.Center,

@@ -105,6 +105,16 @@ class TorrentEngine(context: Context) {
                 val index = pickFile(names, sizes, req.fileIdx, req.filename)
                     ?: throw IOException("El torrent no tiene archivos de vídeo")
 
+                // ¿Cabe? El torrent termina ocupando el vídeo entero mientras lo ves.
+                val fileSize = files.fileSize(index)
+                val free = saveDir.usableSpace
+                if (!hasRoomFor(fileSize, free)) {
+                    throw IOException(
+                        "No hay espacio suficiente: el vídeo pesa ${formatBytes(fileSize)} y en el celular " +
+                            "quedan ${formatBytes(free)} libres. Libera espacio o elige un stream más liviano.",
+                    )
+                }
+
                 // Solo el archivo elegido; los demás (muestras, subtítulos, .nfo) se ignoran.
                 h.prioritizeFiles(Array(count) { if (it == index) Priority.TOP_PRIORITY else Priority.IGNORE })
 

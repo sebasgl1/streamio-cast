@@ -1,5 +1,7 @@
 package com.sebasgl1.streamiocast.player
 
+import android.os.Handler
+import android.os.Looper
 import androidx.annotation.OptIn
 import androidx.media3.common.C
 import androidx.media3.common.Format
@@ -19,9 +21,10 @@ import com.sebasgl1.streamiocast.cast.lanAddress
 import com.sebasgl1.streamiocast.data.PlaybackPrefs
 import com.sebasgl1.streamiocast.history.SavedSubtitle
 import com.sebasgl1.streamiocast.history.WatchEntry
+import com.sebasgl1.streamiocast.history.WatchTarget
 import com.sebasgl1.streamiocast.history.isWatched
 import com.sebasgl1.streamiocast.history.resumePosition
-import com.sebasgl1.streamiocast.stream.MemorySource
+import com.sebasgl1.streamiocast.stream.LazySource
 import com.sebasgl1.streamiocast.subtitles.ExternalSubtitle
 import com.sebasgl1.streamiocast.subtitles.SubCue
 import com.sebasgl1.streamiocast.subtitles.languageName
@@ -48,12 +51,11 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Una reproducción en curso: torrent, servidor local, reproductor, subtítulos y Chromecast.
- * Vive en la app (no en la pantalla), así sobrevive a que Android recree la pantalla. Se cierra
- * solo al salir del reproductor con "atrás" o al quitar la app de recientes.
- * Todos sus métodos se llaman desde el hilo principal.
+ * Vive en la app (no en la pantalla): sobrevive a que Android recree la pantalla y, si se está
+ * transmitiendo, sigue aunque vuelvas al resto de la app. Todos sus métodos van en el hilo principal.
  */
 @OptIn(UnstableApi::class)
-class PlaybackSession(private val app: StremioApp, private val request: PlaybackRequest) {
+class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val prefs = app.playbackPrefs
@@ -67,6 +69,9 @@ class PlaybackSession(private val app: StremioApp, private val request: Playback
 
     var isOpen = true
         private set
+
+    /** La pantalla del reproductor está a la vista. */
+    var attached = false
 
     val player: ExoPlayer = ExoPlayer.Builder(app)
         .setMediaSourceFactory(
@@ -89,6 +94,9 @@ class PlaybackSession(private val app: StremioApp, private val request: Playback
     )
     val ui: StateFlow<PlayerUi> = _ui.asStateFlow()
 
+    val isCasting: Boolean
+        get() = cast.isConnected
+
     private var stream: TorrentStream? = null
     private var path: String? = null
 
@@ -101,11 +109,18 @@ class PlaybackSession(private val app: StremioApp, private val request: Playback
     private var autoSelectDone = false
     private var audioApplied = false
 
+    // Siguiente episodio
+    private var nextTarget: WatchTarget? = null
+    private var countdownJob: Job? = null
+
     // --- Chromecast ---------------------------------------------------------------------
 
     private var castJob: Job? = null
     private var shiftJob: Job? = null
-    private var castSubtitlePath: String? = null
+    private var castSubtitlePaths: List<String> = emptyList()
+
+    /** Retraso → id de la pista ya cargada en el televisor con ese retraso. */
+    private var castOffsetTracks: Map<Long, Long> = emptyMap()
 
     private val cast = CastHandoff(app, object : CastHandoff.Events {
         override fun onConnected(device: String) {
@@ -116,9 +131,13 @@ class PlaybackSession(private val app: StremioApp, private val request: Playback
         override fun onDisconnected(lastPositionMs: Long) {
             saveProgress()
             castJob?.cancel()
-            castSubtitlePath?.let { app.streamServer.unregister(it) }
-            castSubtitlePath = null
+            clearCastSubtitles()
             _ui.update { it.copy(cast = null, castMessage = null) }
+            if (!attached) {
+                // Nadie está mirando el celular: se termina la reproducción.
+                closeLater()
+                return
+            }
             if (isOpen && _ui.value.phase is PlayerPhase.Playing) {
                 // Vuelve al celular donde quedó el televisor (en pausa).
                 if (lastPositionMs > 0) player.seekTo(lastPositionMs)
@@ -127,13 +146,14 @@ class PlaybackSession(private val app: StremioApp, private val request: Playback
             }
         }
 
-        override fun onStatus(state: String, playing: Boolean, failed: Boolean) {
+        override fun onStatus(state: String, playing: Boolean, failed: Boolean, finished: Boolean) {
             _ui.update { s ->
                 s.copy(
                     cast = s.cast?.copy(state = state, playing = playing),
                     castMessage = if (failed) CAST_FAILED else s.castMessage,
                 )
             }
+            if (finished) onEnded()
         }
 
         override fun onProgress(positionMs: Long, durationMs: Long) {
@@ -159,9 +179,11 @@ class PlaybackSession(private val app: StremioApp, private val request: Playback
         player.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 _ui.update { it.copy(buffering = playbackState == Player.STATE_BUFFERING) }
+                if (playbackState == Player.STATE_ENDED && !cast.isConnected) onEnded()
             }
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
+                _ui.update { it.copy(localPlaying = isPlaying) }
                 if (!isPlaying) saveProgress()
             }
 
@@ -180,12 +202,15 @@ class PlaybackSession(private val app: StremioApp, private val request: Playback
         })
         start()
         trackProgress()
+        loadNextEpisode()
     }
 
     // --- Arranque -------------------------------------------------------------------
 
     private fun start() {
         scope.launch {
+            // Notificación con controles; además mantiene viva la descarga con la pantalla apagada.
+            StreamingService.start(app, request.title)
             try {
                 val url = when {
                     request.infoHash != null -> {
@@ -197,8 +222,6 @@ class PlaybackSession(private val app: StremioApp, private val request: Playback
                             return@launch
                         }
                         stream = s
-                        // Sigue descargando aunque apagues la pantalla o estés transmitiendo.
-                        StreamingService.start(app, request.title)
                         val server = app.streamServer
                         withContext(Dispatchers.IO) { server.start() }
                         val p = server.register(s, s.fileName)
@@ -212,15 +235,14 @@ class PlaybackSession(private val app: StremioApp, private val request: Playback
                     else -> throw IllegalStateException("Este stream no trae ni torrent ni enlace.")
                 }
 
-                // Retoma donde ibas.
+                // Retoma donde ibas. Si hay un Chromecast conectado, el celular no suena: va al TV.
                 val resumeAt = resumePosition(savedEntry) ?: 0L
                 player.setMediaItem(MediaItem.fromUri(url), resumeAt)
                 player.prepare()
-                player.playWhenReady = true
+                player.playWhenReady = !cast.hasConnectedDevice()
                 _ui.update { it.copy(phase = PlayerPhase.Playing) }
                 if (resumeAt > 0) showResumeNotice(resumeAt)
 
-                // Si ya hay un Chromecast conectado, el vídeo va directo al televisor.
                 if (cast.isConnected) sendToCast(resumeAt) else cast.adoptExistingSession()
                 loadSubtitles(stream)
             } catch (e: CancellationException) {
@@ -251,6 +273,24 @@ class PlaybackSession(private val app: StremioApp, private val request: Playback
                 _ui.update { it.copy(stats = stats) }
                 delay(1000)
             }
+        }
+    }
+
+    // --- Controles (pantalla y notificación) --------------------------------------------
+
+    fun togglePlay() {
+        when {
+            cast.isConnected -> cast.togglePlayback()
+            player.isPlaying -> player.pause()
+            else -> player.play()
+        }
+    }
+
+    fun seekBy(deltaMs: Long) {
+        if (cast.isConnected) {
+            castSkip(deltaMs)
+        } else {
+            player.seekTo((player.currentPosition + deltaMs).coerceAtLeast(0))
         }
     }
 
@@ -285,6 +325,95 @@ class PlaybackSession(private val app: StremioApp, private val request: Playback
                 watched = it.watched || isWatched(position, duration),
                 hidden = false,
             )
+        }
+    }
+
+    // --- Siguiente episodio ---------------------------------------------------------
+
+    private fun loadNextEpisode() {
+        if (target.season == null) return
+        scope.launch {
+            val meta = try {
+                app.repo.fetchMeta(target.type, target.metaId)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                null
+            } ?: return@launch
+            val next = nextEpisodeVideo(meta.videos, target.videoId) ?: return@launch
+            nextTarget = target.copy(
+                videoId = next.id,
+                season = next.season,
+                episode = next.episode,
+                episodeTitle = next.label,
+            )
+            _ui.update { it.copy(nextUp = "T${next.season} E${next.episode} · ${next.label}") }
+        }
+    }
+
+    /** Falta menos de un minuto: momento de ofrecer el siguiente episodio. */
+    fun nearEnd(): Boolean {
+        if (nextTarget == null) return false
+        val c = _ui.value.cast
+        val position = c?.positionMs ?: player.currentPosition
+        val duration = c?.durationMs ?: player.duration
+        return duration > 0 && duration - position <= 60_000
+    }
+
+    /** Terminó el vídeo (en el celular o en el TV): cuenta regresiva para el siguiente. */
+    private fun onEnded() {
+        saveProgress()
+        if (nextTarget != null) {
+            if (countdownJob == null) startCountdown()
+        } else if (!attached) {
+            closeLater()
+        }
+    }
+
+    private fun startCountdown() {
+        countdownJob = scope.launch {
+            for (s in 10 downTo 1) {
+                _ui.update { it.copy(nextCountdown = s) }
+                delay(1000)
+            }
+            _ui.update { it.copy(nextCountdown = null) }
+            countdownJob = null
+            playNext()
+        }
+    }
+
+    fun cancelNext() {
+        countdownJob?.cancel()
+        countdownJob = null
+        _ui.update { it.copy(nextCountdown = null) }
+    }
+
+    /** Busca streams del siguiente episodio, elige uno como Stremio y lo reproduce (en el TV si se transmite). */
+    fun playNext() {
+        val next = nextTarget ?: return
+        countdownJob?.cancel()
+        countdownJob = null
+        scope.launch {
+            _ui.update { it.copy(nextLoading = true, nextCountdown = null) }
+            val outcome = try {
+                app.repo.fetchStreams(next.type, next.videoId)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                null
+            }
+            val pick = outcome?.let { pickNextStream(it.results, request.bingeGroup, requireCompatible = cast.isConnected) }
+            if (pick == null) {
+                _ui.update {
+                    it.copy(
+                        nextLoading = false,
+                        castMessage = "No encontré un stream para el siguiente episodio. Elígelo desde la ficha.",
+                    )
+                }
+                return@launch
+            }
+            saveProgress()
+            app.startNext(pick.toPlayback(next))
         }
     }
 
@@ -387,11 +516,17 @@ class PlaybackSession(private val app: StremioApp, private val request: Playback
         val offset = _ui.value.subtitleOffsetMs
         history.update(target) { e -> e.copy(subtitle = e.subtitle?.copy(offsetMs = offset)) }
         if (cast.isConnected && _ui.value.externalSelected != null) {
-            // Espera a que dejes de tocar el botón antes de recargar en el televisor.
-            shiftJob?.cancel()
-            shiftJob = scope.launch {
-                delay(1200)
-                sendToCast(cast.positionMs)
+            val trackId = castOffsetTracks[offset]
+            if (trackId != null) {
+                // El TV ya tiene esa versión del subtítulo: se cambia de pista, sin recargar el vídeo.
+                cast.activateTrack(trackId)
+            } else {
+                // Fuera del rango precargado (±10 s): se recarga una vez dejes de tocar el botón.
+                shiftJob?.cancel()
+                shiftJob = scope.launch {
+                    delay(1200)
+                    sendToCast(cast.positionMs)
+                }
             }
         }
     }
@@ -579,7 +714,7 @@ class PlaybackSession(private val app: StremioApp, private val request: Playback
                 }
                 return@launch
             }
-            val subtitleUrl = host?.let { castSubtitleUrl(it) }
+            val (tracks, activeTrack) = if (host != null) castSubtitleTracks(host) else noTracks()
 
             // El celular deja de leer el torrent para no competir con el televisor.
             player.pause()
@@ -591,12 +726,13 @@ class PlaybackSession(private val app: StremioApp, private val request: Playback
                     contentType = castContentType(),
                     title = request.title,
                     startAtMs = startAtMs,
-                    subtitleUrl = subtitleUrl,
+                    subtitleTracks = tracks,
+                    activeSubtitleId = activeTrack,
                     subtitleLang = currentExternalLang(),
                     subtitleScale = CAST_SCALE[_ui.value.subtitleSize.coerceIn(0, 2)],
                 ),
             )
-            val note = if (subtitleUrl == null && _ui.value.textTracks.any { it.selected }) {
+            val note = if (tracks.isEmpty() && _ui.value.textTracks.any { it.selected }) {
                 "Los subtítulos internos del archivo no se pueden transmitir. Elige uno externo en \"Audio y subtítulos\"."
             } else {
                 null
@@ -605,16 +741,41 @@ class PlaybackSession(private val app: StremioApp, private val request: Playback
         }
     }
 
-    /** Publica el subtítulo elegido como WebVTT (lo único que acepta el Chromecast). */
-    private fun castSubtitleUrl(host: String): String? {
-        castSubtitlePath?.let { app.streamServer.unregister(it) }
-        castSubtitlePath = null
+    private fun noTracks(): Pair<List<CastSubtitleTrack>, Long?> = emptyList<CastSubtitleTrack>() to null
+
+    /**
+     * El subtítulo elegido como WebVTT (lo único que acepta el Chromecast), en 41 versiones con
+     * retraso de −10 s a +10 s cada medio segundo: cambiar el retraso es solo cambiar de pista.
+     * Cada versión se genera recién cuando el TV la pide.
+     */
+    private fun castSubtitleTracks(host: String): Pair<List<CastSubtitleTrack>, Long?> {
+        clearCastSubtitles()
         val list = cues
-        if (_ui.value.externalSelected == null || list.isEmpty()) return null
-        val vtt = toWebVtt(list, _ui.value.subtitleOffsetMs).toByteArray(Charsets.UTF_8)
-        val p = app.streamServer.register(MemorySource(vtt, "text/vtt; charset=utf-8"), "subtitulos.vtt")
-        castSubtitlePath = p
-        return app.streamServer.lanUrl(p, host)
+        if (_ui.value.externalSelected == null || list.isEmpty()) return noTracks()
+        val base = _ui.value.subtitleOffsetMs
+        val tracks = mutableListOf<CastSubtitleTrack>()
+        val paths = mutableListOf<String>()
+        val offsets = HashMap<Long, Long>()
+        for (step in -OFFSET_STEPS..OFFSET_STEPS) {
+            val offset = base + step * OFFSET_STEP_MS
+            val id = FIRST_TRACK_ID + step + OFFSET_STEPS
+            val p = app.streamServer.register(
+                LazySource("text/vtt; charset=utf-8") { toWebVtt(list, offset).toByteArray(Charsets.UTF_8) },
+                "subtitulos.vtt",
+            )
+            paths += p
+            tracks += CastSubtitleTrack(id, app.streamServer.lanUrl(p, host))
+            offsets[offset] = id
+        }
+        castSubtitlePaths = paths
+        castOffsetTracks = offsets
+        return tracks to offsets[base]
+    }
+
+    private fun clearCastSubtitles() {
+        castSubtitlePaths.forEach { app.streamServer.unregister(it) }
+        castSubtitlePaths = emptyList()
+        castOffsetTracks = emptyMap()
     }
 
     private fun currentExternalLang(): String? {
@@ -633,6 +794,13 @@ class PlaybackSession(private val app: StremioApp, private val request: Playback
     }
 
     // --- Utilidades -------------------------------------------------------------------
+
+    /** Cierra la sesión fuera del callback actual (desde el Cast SDK no conviene hacerlo en caliente). */
+    private fun closeLater() {
+        Handler(Looper.getMainLooper()).post {
+            if (isOpen && !attached && app.session === this) app.closeSession()
+        }
+    }
 
     private fun trackLabel(format: Format, type: Int): String {
         val name = format.label?.takeIf { it.isNotBlank() }
@@ -693,11 +861,12 @@ class PlaybackSession(private val app: StremioApp, private val request: Playback
         if (!isOpen) return
         saveProgress()
         isOpen = false
+        countdownJob?.cancel()
         if (cast.isConnected) cast.stopMedia()
         cast.release()
         player.release()
         path?.let { app.streamServer.unregister(it) }
-        castSubtitlePath?.let { app.streamServer.unregister(it) }
+        clearCastSubtitles()
         stream?.let { app.torrents.close(it) }
         StreamingService.stop(app)
         scope.cancel()
@@ -706,6 +875,9 @@ class PlaybackSession(private val app: StremioApp, private val request: Playback
     companion object {
         private const val HASH_TIMEOUT_MS = 60_000L
         private val CAST_SCALE = floatArrayOf(0.8f, 1f, 1.3f)
+        private const val OFFSET_STEPS = 20
+        private const val OFFSET_STEP_MS = 500L
+        private const val FIRST_TRACK_ID = 100L
         private const val CAST_FAILED =
             "El Chromecast no pudo reproducir este archivo. Suele ser por el formato (HEVC, 10 bits, " +
                 "audio DTS…). Prueba un stream marcado como Compatible."

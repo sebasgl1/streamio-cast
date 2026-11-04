@@ -48,6 +48,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.sebasgl1.streamiocast.StremioApp
+import androidx.compose.ui.platform.LocalContext
+import com.sebasgl1.streamiocast.cast.isOnMobileData
 import com.sebasgl1.streamiocast.data.AppJson
 import com.sebasgl1.streamiocast.history.WatchTarget
 import com.sebasgl1.streamiocast.player.PlaybackRequest
@@ -225,8 +227,11 @@ fun StreamsScreen(
     }
 
     selected?.let { result ->
+        val context = LocalContext.current
+        val onMobile = remember(result) { isOnMobileData(context) }
         StreamDialog(
             item = result,
+            onMobileData = onMobile,
             onPlay = {
                 selected = null
                 onPlay(result.toPlayback(vm.target))
@@ -315,7 +320,7 @@ private fun StreamRow(item: StreamResult, onClick: () -> Unit) {
 }
 
 @Composable
-private fun StreamDialog(item: StreamResult, onPlay: () -> Unit, onDismiss: () -> Unit) {
+private fun StreamDialog(item: StreamResult, onMobileData: Boolean, onPlay: () -> Unit, onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
         confirmButton = { Button(onClick = onPlay) { Text("Reproducir aquí") } },
@@ -330,6 +335,14 @@ private fun StreamDialog(item: StreamResult, onPlay: () -> Unit, onDismiss: () -
                 )
                 item.cls.reasons.forEach { reason ->
                     Text("• $reason", style = MaterialTheme.typography.bodyMedium)
+                }
+                if (onMobileData) {
+                    Text(
+                        text = "Estás con datos móviles" +
+                            (item.info.sizeText?.let { ": este stream pesa $it." } ?: ". Un torrent puede gastar varios GB."),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                    )
                 }
                 Text(
                     text = "En el celular se puede ver cualquier stream, incluso los no compatibles. " +
