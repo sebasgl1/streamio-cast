@@ -57,6 +57,8 @@ data class WatchEntry(
     val audioLang: String? = null,
     /** Quitado a mano de "Continuar viendo" (vuelve a salir si lo sigues viendo). */
     val hidden: Boolean = false,
+    /** Episodio siguiente a uno que terminaste: sale en "Continuar viendo" aunque no lo hayas empezado. */
+    val upNext: Boolean = false,
 ) {
     val progress: Float
         get() = if (durationMs > 0) (positionMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
@@ -87,6 +89,31 @@ class WatchHistory(context: Context) {
         val next = change(current).copy(target = target, updatedAt = System.currentTimeMillis())
         _entries.value = _entries.value + (target.videoId to next)
         persist()
+    }
+
+    /**
+     * Mezcla lo traído de tu cuenta de Stremio: gana lo más reciente. Se conservan tus ajustes
+     * locales de subtítulos y audio.
+     */
+    @Synchronized
+    fun mergeRemote(remote: List<WatchEntry>) {
+        var changed = false
+        val map = _entries.value.toMutableMap()
+        for (r in remote) {
+            val local = map[r.target.videoId]
+            if (local != null && local.updatedAt >= r.updatedAt) continue
+            map[r.target.videoId] = r.copy(
+                subtitle = local?.subtitle,
+                audioLang = local?.audioLang,
+                watched = local?.watched ?: false,
+                target = if (local != null && r.target.poster == null) r.target.copy(poster = local.target.poster) else r.target,
+            )
+            changed = true
+        }
+        if (changed) {
+            _entries.value = map
+            persist()
+        }
     }
 
     /** Quita una serie o película de "Continuar viendo". */

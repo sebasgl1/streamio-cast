@@ -63,6 +63,8 @@ class HomeViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         start()
+        // Trae "Continuar viendo" de tu cuenta de Stremio (si iniciaste sesión).
+        (app as StremioApp).sync.pull()
     }
 
     fun retry() = start()

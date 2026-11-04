@@ -3,6 +3,8 @@ package com.sebasgl1.streamiocast
 import android.app.Application
 import com.sebasgl1.streamiocast.data.AddonRepository
 import com.sebasgl1.streamiocast.data.PlaybackPrefs
+import com.sebasgl1.streamiocast.data.StremioSync
+import com.sebasgl1.streamiocast.dlna.DlnaDevice
 import com.sebasgl1.streamiocast.history.WatchHistory
 import com.sebasgl1.streamiocast.player.PlaybackRequest
 import com.sebasgl1.streamiocast.player.PlaybackSession
@@ -22,6 +24,11 @@ class StremioApp : Application() {
     val subtitles: SubtitleRepository by lazy { SubtitleRepository(repo) }
     val playbackPrefs: PlaybackPrefs by lazy { PlaybackPrefs(this) }
     val history: WatchHistory by lazy { WatchHistory(this) }
+    val sync: StremioSync by lazy { StremioSync(repo, history) }
+
+    /** El televisor DLNA elegido (sigue elegido para el siguiente episodio hasta que lo sueltes). */
+    @Volatile
+    var dlnaDevice: DlnaDevice? = null
 
     /** Stream elegido en la lista, a la espera de que lo recoja la pantalla de reproducción. */
     @Volatile

@@ -6,6 +6,7 @@ import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import com.sebasgl1.streamiocast.dlna.DLNA_VIDEO_HEADERS
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -73,7 +74,22 @@ class LocalStreamServer {
     }
 
     fun unregister(path: String) {
-        sources.remove(tokenOf(path))
+        val token = tokenOf(path)
+        sources.remove(token)
+        extraHeaders.remove(token)
+    }
+
+    /** Cabeceras extra para un recurso (por ejemplo, el subtítulo que leen los Samsung). */
+    fun setHeaders(path: String, headers: Map<String, String>) {
+        extraHeaders[tokenOf(path)] = headers
+    }
+
+    private val extraHeaders = ConcurrentHashMap<String, Map<String, String>>()
+
+    private fun headersFor(token: String, mimeType: String): Map<String, String> {
+        // Los televisores DLNA piden estas cabeceras para reproducir y poder adelantar.
+        val dlna = if (mimeType.startsWith("video/")) DLNA_VIDEO_HEADERS else emptyMap()
+        return dlna + extraHeaders[token].orEmpty()
     }
 
     fun localUrl(path: String): String = "http://127.0.0.1:$port$path"
@@ -126,7 +142,8 @@ class LocalStreamServer {
                     writeHead(out, 405, "Method Not Allowed", mapOf("Content-Length" to "0"))
                     return
                 }
-                val source = sources[tokenOf(path)]
+                val token = tokenOf(path)
+                val source = sources[token]
                 if (source == null) {
                     writeHead(out, 404, "Not Found", mapOf("Content-Length" to "0"))
                     return
@@ -147,7 +164,7 @@ class LocalStreamServer {
                                 "Content-Type" to source.mimeType,
                                 "Content-Length" to length.toString(),
                                 "Accept-Ranges" to "bytes",
-                            ),
+                            ) + headersFor(token, source.mimeType),
                         )
                         if (method == "GET" && length > 0) sendBody(out, source, 0, length - 1, isCancelled)
                     }
@@ -161,7 +178,7 @@ class LocalStreamServer {
                                 "Content-Length" to r.length.toString(),
                                 "Content-Range" to "bytes ${r.start}-${r.endInclusive}/$length",
                                 "Accept-Ranges" to "bytes",
-                            ),
+                            ) + headersFor(token, source.mimeType),
                         )
                         if (method == "GET") sendBody(out, source, r.start, r.endInclusive, isCancelled)
                     }

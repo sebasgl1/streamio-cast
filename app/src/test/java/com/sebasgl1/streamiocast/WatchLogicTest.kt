@@ -7,6 +7,7 @@ import com.sebasgl1.streamiocast.history.formatClock
 import com.sebasgl1.streamiocast.history.isWatched
 import com.sebasgl1.streamiocast.history.remainingLabel
 import com.sebasgl1.streamiocast.history.resumePosition
+import com.sebasgl1.streamiocast.history.seasonEpisodeOf
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -51,6 +52,17 @@ class WatchLogicTest {
             ),
         )
         assertEquals(listOf("s:1:2", "m1"), list.map { it.target.videoId })
+    }
+
+    @Test
+    fun upNextEpisodeShowsInContinueWatching() {
+        val next = entry("s:1:3", 1, 0, at = 99, meta = "s").copy(upNext = true)
+        val list = continueWatching(listOf(entry("s:1:2", 2_300_000, 2_400_000, at = 98, meta = "s", watched = true), next))
+        assertEquals(listOf("s:1:3"), list.map { it.target.videoId })
+        assertEquals("Siguiente", remainingLabel(next))
+        assertEquals(1 to 3, seasonEpisodeOf("tt0944947:1:3"))
+        assertNull(seasonEpisodeOf("kitsu:123:4"))
+        assertNull(seasonEpisodeOf("tt0133093"))
     }
 
     @Test

@@ -62,7 +62,10 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
     val ui: StateFlow<SettingsUi> = _ui.asStateFlow()
 
     fun login(email: String, password: String) =
-        run("Sesión iniciada y addons importados") { repo.login(email, password) }
+        run("Sesión iniciada y addons importados") {
+            repo.login(email, password)
+            getApplication<StremioApp>().sync.pull()
+        }
 
     fun refresh() = run("Addons sincronizados") { repo.refreshAddons() }
 

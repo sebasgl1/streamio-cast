@@ -85,6 +85,8 @@ data class PlayerUi(
     /** No nulo mientras hay un Chromecast conectado. */
     val cast: CastUi? = null,
     val castMessage: String? = null,
+    /** El vídeo real no es compatible con el Chromecast (por qué), a la espera de "intentar igual". */
+    val castBlocked: String? = null,
     /** Posición desde la que se retomó (para el aviso "Desde el inicio"). */
     val resumedFromMs: Long? = null,
     /** ¿El reproductor del celular está sonando? */

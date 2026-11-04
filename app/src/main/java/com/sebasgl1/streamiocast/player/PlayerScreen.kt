@@ -13,7 +13,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.Slider
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
-import com.sebasgl1.streamiocast.cast.CastButton
+import com.sebasgl1.streamiocast.cast.TransmitButton
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -225,6 +225,14 @@ fun PlayerScreen(onBack: () -> Unit, model: PlayerViewModel = viewModel()) {
                 onBack = close,
                 onTracks = { menuOpen = true },
                 modifier = Modifier.align(Alignment.TopCenter),
+                transmit = {
+                    TransmitButton(
+                        connectedTo = castUi?.device,
+                        onChromecast = vm::prepareForChromecast,
+                        onDlna = vm::connectDlna,
+                        onStop = vm::stopCasting,
+                    )
+                },
             )
         }
 
@@ -291,6 +299,7 @@ private fun TopBar(
     onBack: () -> Unit,
     onTracks: () -> Unit,
     modifier: Modifier = Modifier,
+    transmit: @Composable () -> Unit,
 ) {
     Row(
         modifier = modifier
@@ -315,7 +324,7 @@ private fun TopBar(
                 .weight(1f)
                 .padding(horizontal = 8.dp),
         )
-        CastButton()
+        transmit()
         if (showTracks) {
             TextButton(
                 onClick = onTracks,
@@ -583,6 +592,25 @@ private fun CastPanel(ui: PlayerUi, cast: CastUi, vm: PlaybackSession, modifier:
             textAlign = TextAlign.Center,
         )
         Text(cast.state, color = Color.White.copy(alpha = 0.75f))
+        // La revisión del vídeo real encontró algo que tu Chromecast no reproduce.
+        ui.castBlocked?.let { reason ->
+            Text(
+                text = reason,
+                color = Color(0xFFFFC857),
+                style = MaterialTheme.typography.bodyMedium,
+                textAlign = TextAlign.Center,
+            )
+            Text(
+                text = "Elige un stream marcado como Compatible, o intenta igual.",
+                color = Color.White.copy(alpha = 0.7f),
+                style = MaterialTheme.typography.bodySmall,
+                textAlign = TextAlign.Center,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedButton(onClick = vm::forceCast) { Text("Intentar igual", color = Color.White) }
+                Button(onClick = vm::stopCasting) { Text("Ver en el celular") }
+            }
+        }
         ui.stats?.let { stats ->
             Text(
                 text = statsLine(stats),

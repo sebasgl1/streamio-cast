@@ -19,9 +19,12 @@ fun resumePosition(entry: WatchEntry?): Long? {
     return entry.positionMs
 }
 
-/** Fila "Continuar viendo": lo empezado y sin terminar, lo más reciente primero, uno por serie. */
+/**
+ * Fila "Continuar viendo": lo empezado y sin terminar, y el siguiente episodio de lo que
+ * terminaste (como Stremio). Lo más reciente primero, uno por serie.
+ */
 fun continueWatching(entries: Collection<WatchEntry>, limit: Int = 20): List<WatchEntry> = entries
-    .filter { !it.hidden && resumePosition(it) != null }
+    .filter { !it.hidden && (resumePosition(it) != null || (it.upNext && !it.watched)) }
     .sortedByDescending { it.updatedAt }
     .distinctBy { it.target.metaId }
     .take(limit)
@@ -40,7 +43,17 @@ fun formatClock(ms: Long): String {
 
 /** "quedan 23 min" para las tarjetas. */
 fun remainingLabel(entry: WatchEntry): String? {
+    if (entry.upNext && entry.positionMs < MIN_RESUME_MS) return "Siguiente"
     if (entry.durationMs <= 0) return null
     val minutes = ((entry.durationMs - entry.positionMs) / 60_000).coerceAtLeast(1)
     return "quedan $minutes min"
+}
+
+/** Temporada y episodio de un id de Cinemeta ("tt0944947:1:2"). */
+fun seasonEpisodeOf(videoId: String): Pair<Int, Int>? {
+    val parts = videoId.split(':')
+    if (parts.size != 3 || !parts[0].startsWith("tt")) return null
+    val season = parts[1].toIntOrNull() ?: return null
+    val episode = parts[2].toIntOrNull() ?: return null
+    return season to episode
 }

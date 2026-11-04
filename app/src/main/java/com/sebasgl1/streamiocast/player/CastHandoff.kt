@@ -35,13 +35,19 @@ data class CastMedia(
     val activeSubtitleId: Long?,
     val subtitleLang: String?,
     val subtitleScale: Float,
+    /** Tipo real del archivo (para televisores DLNA). */
+    val videoMime: String = "video/mp4",
+    /** Subtítulo en SRT (televisores DLNA/Samsung). */
+    val srtUrl: String? = null,
 )
 
 /**
  * Envoltorio del Cast SDK: conecta/desconecta, carga el vídeo en el receptor por defecto de Google
  * y reenvía su estado. Todo se llama desde el hilo principal.
  */
-class CastHandoff(context: Context, private val events: Events) {
+class CastHandoff(context: Context, private val events: Events) : RemotePlayer {
+
+    override val supportsTrackSwitch: Boolean = true
 
     interface Events {
         fun onConnected(device: String)
@@ -55,7 +61,7 @@ class CastHandoff(context: Context, private val events: Events) {
     private var session: CastSession? = null
     private var lastPositionMs = 0L
 
-    val isConnected: Boolean
+    override val isConnected: Boolean
         get() = session?.isConnected == true
 
     /** ¿Hay un Chromecast conectado aunque esta sesión aún no lo haya tomado? */
@@ -115,7 +121,7 @@ class CastHandoff(context: Context, private val events: Events) {
         events.onDisconnected(lastPositionMs)
     }
 
-    fun load(media: CastMedia) {
+    override fun load(media: CastMedia) {
         val remote = session?.remoteMediaClient ?: return
         val metadata = MediaMetadata(MediaMetadata.MEDIA_TYPE_MOVIE).apply {
             putString(MediaMetadata.KEY_TITLE, media.title)
@@ -149,40 +155,40 @@ class CastHandoff(context: Context, private val events: Events) {
         remote.load(request)
     }
 
-    val positionMs: Long
+    override val positionMs: Long
         get() = session?.remoteMediaClient?.approximateStreamPosition?.takeIf { it > 0 } ?: lastPositionMs
 
-    fun togglePlayback() {
+    override fun togglePlayback() {
         session?.remoteMediaClient?.togglePlayback()
     }
 
-    fun seek(positionMs: Long) {
+    override fun seek(positionMs: Long) {
         session?.remoteMediaClient?.seek(MediaSeekOptions.Builder().setPosition(positionMs.coerceAtLeast(0)).build())
     }
 
-    fun setSubtitleScale(scale: Float) {
+    override fun setSubtitleScale(scale: Float) {
         session?.remoteMediaClient?.setTextTrackStyle(textStyle(scale))
     }
 
     /** Cambia de pista de subtítulos sin recargar el vídeo (así se ajusta el retraso). */
-    fun activateTrack(id: Long) {
+    override fun activateTrack(id: Long) {
         session?.remoteMediaClient?.setActiveMediaTracks(longArrayOf(id))
     }
 
-    fun hideSubtitles() {
+    override fun hideSubtitles() {
         session?.remoteMediaClient?.setActiveMediaTracks(longArrayOf())
     }
 
     /** Detiene el vídeo en el televisor (sin desconectar el Chromecast). */
-    fun stopMedia() {
+    override fun stopMedia() {
         session?.remoteMediaClient?.stop()
     }
 
-    fun disconnect() {
+    override fun disconnect() {
         castContext?.sessionManager?.endCurrentSession(true)
     }
 
-    fun release() {
+    override fun release() {
         castContext?.sessionManager?.removeSessionManagerListener(sessionListener, CastSession::class.java)
         session?.remoteMediaClient?.let { remote ->
             remote.unregisterCallback(remoteCallback)

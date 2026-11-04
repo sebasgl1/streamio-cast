@@ -91,6 +91,24 @@ fun toWebVtt(cues: List<SubCue>, offsetMs: Long = 0): String = buildString {
     }
 }
 
+private fun srtTime(ms: Long): String {
+    val t = ms.coerceAtLeast(0)
+    return String.format(Locale.US, "%02d:%02d:%02d,%03d", t / 3_600_000, t / 60_000 % 60, t / 1000 % 60, t % 1000)
+}
+
+/** SRT: el formato de subtítulos que leen los televisores Samsung por DLNA. */
+fun toSrt(cues: List<SubCue>, offsetMs: Long = 0): String = buildString {
+    var n = 1
+    for (cue in cues) {
+        val start = cue.startMs + offsetMs
+        val end = cue.endMs + offsetMs
+        if (end <= 0) continue
+        append(n++).append('\n')
+        append(srtTime(start)).append(" --> ").append(srtTime(end)).append('\n')
+        append(cue.text).append("\n\n")
+    }
+}
+
 /**
  * Muchos subtítulos en español vienen en Windows-1252 en vez de UTF-8 (salen tildes rotas).
  * Si el archivo no es UTF-8 válido, se lee como Windows-1252.

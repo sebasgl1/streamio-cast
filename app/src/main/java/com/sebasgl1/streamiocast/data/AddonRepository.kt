@@ -31,6 +31,10 @@ class AddonRepository(context: Context) {
     private val _addons = MutableStateFlow(loadAddons())
     val addons: StateFlow<List<Addon>> = _addons
 
+    /** Sesión de la cuenta de Stremio (null si no has iniciado sesión). */
+    val authKey: String?
+        get() = prefs.getString(KEY_AUTH, null)
+
     private val _accountEmail = MutableStateFlow(prefs.getString(KEY_EMAIL, null))
     val accountEmail: StateFlow<String?> = _accountEmail
 

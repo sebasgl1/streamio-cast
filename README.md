@@ -15,7 +15,8 @@ Código desde cero: Kotlin, Jetpack Compose (Material 3), OkHttp y Coil.
 | 3 | Motor de torrents (descarga secuencial + servidor HTTP local) y reproductor Media3 | ✅ escrita |
 | 3.5 | Audio y subtítulos: pistas del archivo, subtítulos de addons (OpenSubtitles v3) con hash, idiomas preferidos, retraso y tamaño | ✅ escrita |
 | 4 | Google Cast SDK: botón de transmitir, traspaso celular ↔ TV, subtítulos WebVTT, control remoto, servicio en primer plano | ✅ escrita |
-| 5 | Continuar viendo, subtítulos, pulido de tablet | pendiente |
+| 5 | Seguimiento, siguiente episodio, notificación con controles, APK liviano | ✅ escrita |
+| 6 | Televisores DLNA (Samsung), revisión del formato real antes de transmitir, sincronización con la cuenta de Stremio | ✅ escrita |
 
 ## Compilar
 
