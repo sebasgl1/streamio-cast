@@ -128,7 +128,7 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
     /** Retraso → id de la pista ya cargada en el televisor con ese retraso. */
     private var castOffsetTracks: Map<Long, Long> = emptyMap()
 
-    private val remoteEvents = object : CastHandoff.Events {
+    private val remoteEvents: CastHandoff.Events = object : CastHandoff.Events {
         override fun onConnected(device: String) {
             _ui.update { it.copy(cast = CastUi(device), castMessage = null) }
             if (_ui.value.phase is PlayerPhase.Playing) sendToCast(player.currentPosition)
