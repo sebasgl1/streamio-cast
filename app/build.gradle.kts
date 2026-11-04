@@ -24,7 +24,7 @@ android {
     }
 
     // Con el NDK disponible, Gradle quita los símbolos de depuración de las librerías nativas.
-    System.getenv("ANDROID_NDK_LATEST_HOME")?.let { ndkVersion = java.io.File(it).name }
+    System.getenv("ANDROID_NDK_LATEST_HOME")?.let { ndkVersion = file(it).name }
 
     // Firma fija para que cada APK nuevo se pueda instalar encima del anterior.
     signingConfigs {
