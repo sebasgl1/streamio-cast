@@ -328,7 +328,7 @@ private fun StreamDialog(item: StreamResult, onPlay: () -> Unit, onDismiss: () -
                 }
                 Text(
                     text = "En el celular se puede ver cualquier stream, incluso los no compatibles. " +
-                        "Transmitir al Chromecast llega en la etapa 4.",
+                        "Para el televisor, reprodúcelo y toca el ícono de Cast arriba a la derecha.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.secondary,
                 )

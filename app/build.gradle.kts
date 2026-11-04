@@ -73,6 +73,11 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.4.1")
     implementation("androidx.media3:media3-ui:1.4.1")
 
+    // Chromecast (Google Cast SDK) + botón y selector de dispositivos
+    implementation("com.google.android.gms:play-services-cast-framework:21.5.0")
+    implementation("androidx.mediarouter:mediarouter:1.7.0")
+    implementation("androidx.appcompat:appcompat:1.7.0")
+
     // Motor de torrents (libtorrent) + binarios nativos para celulares ARM de 64 y 32 bits
     implementation("org.libtorrent4j:libtorrent4j:2.1.0-39")
     implementation("org.libtorrent4j:libtorrent4j-android-arm64:2.1.0-39")

@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.StreamioCast" parent="android:Theme.DeviceDefault.NoActionBar">
+    <!-- Base AppCompat (oscura): la necesita el selector de dispositivos de Cast. -->
+    <style name="Theme.StreamioCast" parent="Theme.AppCompat.NoActionBar">
+        <item name="colorPrimary">#FF7B5CFF</item>
+        <item name="colorAccent">#FF9D86FF</item>
         <item name="android:windowBackground">@color/app_background</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>

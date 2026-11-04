@@ -14,7 +14,7 @@ Código desde cero: Kotlin, Jetpack Compose (Material 3), OkHttp y Coil.
 | 2 | Streams de Torrentio con filtro 1080p H.264 + audio compatible con Chromecast 2ª gen | ✅ escrita |
 | 3 | Motor de torrents (descarga secuencial + servidor HTTP local) y reproductor Media3 | ✅ escrita |
 | 3.5 | Audio y subtítulos: pistas del archivo, subtítulos de addons (OpenSubtitles v3) con hash, idiomas preferidos, retraso y tamaño | ✅ escrita |
-| 4 | Google Cast SDK: botón de transmitir y controles | pendiente |
+| 4 | Google Cast SDK: botón de transmitir, traspaso celular ↔ TV, subtítulos WebVTT, control remoto, servicio en primer plano | ✅ escrita |
 | 5 | Continuar viendo, subtítulos, pulido de tablet | pendiente |
 
 ## Compilar

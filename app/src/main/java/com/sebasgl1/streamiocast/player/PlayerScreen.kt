@@ -2,8 +2,17 @@
 
 package com.sebasgl1.streamiocast.player
 
+import android.Manifest
 import android.app.Activity
+import android.content.pm.PackageManager
+import android.os.Build
 import android.view.View
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material3.Slider
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
+import com.sebasgl1.streamiocast.cast.CastButton
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -83,7 +92,20 @@ fun PlayerScreen(onBack: () -> Unit, vm: PlayerViewModel = viewModel()) {
     val ui by vm.ui.collectAsStateWithLifecycle()
     var controlsVisible by remember { mutableStateOf(true) }
     var menuOpen by remember { mutableStateOf(false) }
+    val castUi = ui.cast
     ImmersiveMode()
+
+    // Android 13+: permiso para la notificación que mantiene viva la descarga.
+    val context = LocalContext.current
+    val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+    LaunchedEffect(ui.isTorrent) {
+        if (ui.isTorrent && Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
 
     Box(
         Modifier
@@ -91,7 +113,14 @@ fun PlayerScreen(onBack: () -> Unit, vm: PlayerViewModel = viewModel()) {
             .background(Color.Black),
     ) {
         when (val phase = ui.phase) {
-            PlayerPhase.Playing -> {
+            PlayerPhase.Playing -> if (castUi != null) {
+                CastPanel(
+                    ui = ui,
+                    cast = castUi,
+                    vm = vm,
+                    modifier = Modifier.align(Alignment.Center),
+                )
+            } else {
                 AndroidView(
                     factory = { ctx ->
                         PlayerView(ctx).apply {
@@ -171,13 +200,27 @@ fun PlayerScreen(onBack: () -> Unit, vm: PlayerViewModel = viewModel()) {
             }
         }
 
-        if (controlsVisible || ui.phase !is PlayerPhase.Playing) {
+        if (controlsVisible || castUi != null || ui.phase !is PlayerPhase.Playing) {
             TopBar(
                 title = ui.title,
                 showTracks = ui.phase is PlayerPhase.Playing,
                 onBack = onBack,
                 onTracks = { menuOpen = true },
                 modifier = Modifier.align(Alignment.TopCenter),
+            )
+        }
+
+        ui.castMessage?.let { message ->
+            Text(
+                text = message,
+                color = Color(0xFFFFC857),
+                style = MaterialTheme.typography.bodyMedium,
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(start = 24.dp, end = 24.dp, bottom = 24.dp)
+                    .background(Color.Black.copy(alpha = 0.7f), RoundedCornerShape(8.dp))
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
             )
         }
     }
@@ -218,6 +261,7 @@ private fun TopBar(
                 .weight(1f)
                 .padding(horizontal = 8.dp),
         )
+        CastButton()
         if (showTracks) {
             TextButton(
                 onClick = onTracks,
@@ -398,6 +442,76 @@ private fun OptionRow(label: String, selected: Boolean, onClick: () -> Unit) {
         Spacer(Modifier.width(8.dp))
         Text(label, style = MaterialTheme.typography.bodyMedium)
     }
+}
+
+/** Control remoto del Chromecast: el vídeo se ve en el televisor y aquí se maneja. */
+@Composable
+private fun CastPanel(ui: PlayerUi, cast: CastUi, vm: PlayerViewModel, modifier: Modifier) {
+    var dragging by remember { mutableStateOf<Float?>(null) }
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Text(
+            text = "Transmitiendo a ${cast.device}",
+            color = Color.White,
+            style = MaterialTheme.typography.titleMedium,
+            textAlign = TextAlign.Center,
+        )
+        Text(cast.state, color = Color.White.copy(alpha = 0.75f))
+        ui.stats?.let { stats ->
+            Text(
+                text = statsLine(stats),
+                color = Color.White.copy(alpha = 0.6f),
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        if (cast.durationMs > 0) {
+            Slider(
+                value = (dragging ?: cast.positionMs.toFloat()).coerceIn(0f, cast.durationMs.toFloat()),
+                onValueChange = { dragging = it },
+                onValueChangeFinished = {
+                    dragging?.let { vm.castSeek(it.toLong()) }
+                    dragging = null
+                },
+                valueRange = 0f..cast.durationMs.toFloat(),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Row(Modifier.fillMaxWidth()) {
+                Text(formatTime((dragging ?: cast.positionMs.toFloat()).toLong()), color = Color.White)
+                Spacer(Modifier.weight(1f))
+                Text(formatTime(cast.durationMs), color = Color.White)
+            }
+        }
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            OutlinedButton(onClick = { vm.castSkip(-10_000) }) { Text("−10 s", color = Color.White) }
+            Button(onClick = vm::castTogglePlay) { Text(if (cast.playing) "Pausar" else "Reproducir") }
+            OutlinedButton(onClick = { vm.castSkip(30_000) }) { Text("+30 s", color = Color.White) }
+        }
+        TextButton(onClick = vm::stopCasting) {
+            Text("Dejar de transmitir y seguir en el celular", color = Color.White)
+        }
+        Text(
+            text = "Mantén la app abierta (puedes apagar la pantalla): el celular le pasa el vídeo al televisor.",
+            color = Color.White.copy(alpha = 0.5f),
+            style = MaterialTheme.typography.bodySmall,
+            textAlign = TextAlign.Center,
+        )
+    }
+}
+
+private fun formatTime(ms: Long): String {
+    val total = (ms / 1000).coerceAtLeast(0)
+    val h = total / 3600
+    val m = total / 60 % 60
+    val s = total % 60
+    return if (h > 0) String.format(Locale.US, "%d:%02d:%02d", h, m, s) else String.format(Locale.US, "%d:%02d", m, s)
 }
 
 private fun formatOffset(ms: Long): String {

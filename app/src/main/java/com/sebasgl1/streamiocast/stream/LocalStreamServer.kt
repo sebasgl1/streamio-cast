@@ -78,6 +78,9 @@ class LocalStreamServer {
 
     fun localUrl(path: String): String = "http://127.0.0.1:$port$path"
 
+    /** URL para otros equipos de la red (el Chromecast), usando la IP local del celular. */
+    fun lanUrl(path: String, host: String): String = "http://$host:$port$path"
+
     private fun tokenOf(path: String): String =
         path.substringBefore('?').removePrefix("/stream/").substringBefore('/')
 

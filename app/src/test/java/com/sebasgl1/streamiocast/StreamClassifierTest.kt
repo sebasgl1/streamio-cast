@@ -72,9 +72,9 @@ class StreamClassifierTest {
     }
 
     @Test
-    fun webDlWithDolbyDigitalPlusIsGoodButNeedsAudioConversion() {
+    fun webDlWithDolbyDigitalPlusIsMaybeForCast() {
         val r = result(stream("Movie.2020.1080p.WEB-DL.DDP5.1.H.264-GROUP\n👤 80 💾 3.4 GB ⚙️ EZTV"))
-        assertEquals(Verdict.GOOD, r.cls.verdict)
+        assertEquals(Verdict.MAYBE, r.cls.verdict)
         assertEquals(VideoCodec.H264, r.info.codec)
         assertEquals(setOf(AudioCodec.EAC3), r.info.audio)
         assertTrue(r.cls.needsAudioConvert)
@@ -126,7 +126,7 @@ class StreamClassifierTest {
         val r = result(stream("Movie.2018.1080p.BluRay.x264.DTS-HD.MA.5.1-GROUP\n👤 55 💾 9 GB ⚙️ TPB"))
         assertTrue(AudioCodec.DTS in r.info.audio)
         assertTrue(r.cls.needsAudioConvert)
-        assertEquals(Verdict.GOOD, r.cls.verdict)
+        assertEquals(Verdict.MAYBE, r.cls.verdict)
     }
 
     @Test

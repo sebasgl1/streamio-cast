@@ -16,7 +16,11 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import com.sebasgl1.streamiocast.StreamingService
 import com.sebasgl1.streamiocast.StremioApp
+import com.sebasgl1.streamiocast.cast.lanAddress
+import com.sebasgl1.streamiocast.stream.MemorySource
+import com.sebasgl1.streamiocast.subtitles.toWebVtt
 import com.sebasgl1.streamiocast.data.PlaybackPrefs
 import com.sebasgl1.streamiocast.data.StreamResult
 import com.sebasgl1.streamiocast.data.SubtitleItem
@@ -102,6 +106,9 @@ data class PlayerUi(
     val subtitleOffsetMs: Long = 0,
     val subtitleSize: Int = 1,
     val subtitleError: String? = null,
+    /** No nulo mientras hay un Chromecast conectado. */
+    val cast: CastUi? = null,
+    val castMessage: String? = null,
 )
 
 @OptIn(UnstableApi::class)
@@ -141,6 +148,49 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     private var subtitleJob: Job? = null
     private var externalsLoaded = false
     private var autoSelectDone = false
+
+    // --- Chromecast ---------------------------------------------------------------------
+
+    private var castJob: Job? = null
+    private var shiftJob: Job? = null
+    private var castSubtitlePath: String? = null
+
+    private val cast = CastHandoff(app, object : CastHandoff.Events {
+        override fun onConnected(device: String) {
+            _ui.update { it.copy(cast = CastUi(device), castMessage = null) }
+            if (_ui.value.phase is PlayerPhase.Playing) sendToCast(player.currentPosition)
+        }
+
+        override fun onDisconnected(lastPositionMs: Long) {
+            castJob?.cancel()
+            castSubtitlePath?.let { stremio.streamServer.unregister(it) }
+            castSubtitlePath = null
+            _ui.update { it.copy(cast = null, castMessage = null) }
+            if (_ui.value.phase is PlayerPhase.Playing) {
+                // Vuelve al celular donde quedó el televisor (en pausa).
+                if (lastPositionMs > 0) player.seekTo(lastPositionMs)
+                player.playWhenReady = false
+                player.prepare()
+            }
+        }
+
+        override fun onStatus(state: String, playing: Boolean, failed: Boolean) {
+            _ui.update { s ->
+                s.copy(
+                    cast = s.cast?.copy(state = state, playing = playing),
+                    castMessage = if (failed) CAST_FAILED else s.castMessage,
+                )
+            }
+        }
+
+        override fun onProgress(positionMs: Long, durationMs: Long) {
+            _ui.update { s -> s.copy(cast = s.cast?.copy(positionMs = positionMs, durationMs = durationMs)) }
+        }
+
+        override fun onConnectFailed() {
+            _ui.update { it.copy(castMessage = "No se pudo conectar con el Chromecast.") }
+        }
+    })
 
     init {
         // Idiomas preferidos para las pistas que vienen dentro del archivo.
@@ -189,6 +239,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                             TorrentRequest(req.infoHash, req.fileIdx, req.filename, req.trackers),
                         ) { message -> _ui.update { it.copy(phase = PlayerPhase.Preparing(message)) } }
                         stream = s
+                        // Sigue descargando aunque apagues la pantalla o estés transmitiendo.
+                        StreamingService.start(getApplication(), req.title)
                         val server = stremio.streamServer
                         withContext(Dispatchers.IO) { server.start() }
                         val p = server.register(s, s.fileName)
@@ -205,6 +257,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                 player.prepare()
                 player.playWhenReady = true
                 _ui.update { it.copy(phase = PlayerPhase.Playing) }
+                // Si ya hay un Chromecast conectado, el vídeo va directo al televisor.
+                if (cast.isConnected) sendToCast(0) else cast.adoptExistingSession()
                 loadSubtitles(req, stream)
             } catch (e: CancellationException) {
                 throw e
@@ -291,6 +345,8 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
                 .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
                 .build()
             _ui.update { it.copy(externalSelected = sub.id) }
+            // En el Chromecast los subtítulos van dentro de la carga: se recarga donde iba.
+            if (cast.isConnected) sendToCast(cast.positionMs)
         }
     }
 
@@ -304,11 +360,104 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     fun shiftSubtitles(deltaMs: Long) {
         _ui.update { it.copy(subtitleOffsetMs = it.subtitleOffsetMs + deltaMs) }
+        if (cast.isConnected && _ui.value.externalSelected != null) {
+            // Espera a que dejes de tocar el botón antes de recargar en el televisor.
+            shiftJob?.cancel()
+            shiftJob = viewModelScope.launch {
+                delay(1200)
+                sendToCast(cast.positionMs)
+            }
+        }
     }
 
     fun setSubtitleSize(size: Int) {
         prefs.subtitleSize = size
         _ui.update { it.copy(subtitleSize = size) }
+        cast.setSubtitleScale(CAST_SCALE[size.coerceIn(0, 2)])
+    }
+
+    // --- Control del Chromecast ---------------------------------------------------------
+
+    fun castTogglePlay() = cast.togglePlayback()
+
+    fun castSeek(positionMs: Long) = cast.seek(positionMs)
+
+    fun castSkip(deltaMs: Long) {
+        val c = _ui.value.cast ?: return
+        val max = if (c.durationMs > 0) c.durationMs else Long.MAX_VALUE
+        cast.seek((cast.positionMs + deltaMs).coerceIn(0, max))
+    }
+
+    fun stopCasting() = cast.disconnect()
+
+    private fun sendToCast(startAtMs: Long) {
+        castJob?.cancel()
+        castJob = viewModelScope.launch {
+            val req = request ?: return@launch
+            val server = stremio.streamServer
+            val host = withContext(Dispatchers.IO) {
+                server.start()
+                lanAddress()
+            }
+            val videoPath = path
+            val url = if (videoPath != null) host?.let { server.lanUrl(videoPath, it) } else req.url
+            if (url == null) {
+                _ui.update {
+                    it.copy(castMessage = "Para transmitir, el celular y el Chromecast deben estar en la misma red Wi-Fi.")
+                }
+                return@launch
+            }
+            val subtitleUrl = host?.let { castSubtitleUrl(it) }
+
+            // El celular deja de leer el torrent para no competir con el televisor.
+            player.pause()
+            player.stop()
+
+            cast.load(
+                CastMedia(
+                    url = url,
+                    contentType = castContentType(req),
+                    title = req.title,
+                    startAtMs = startAtMs,
+                    subtitleUrl = subtitleUrl,
+                    subtitleLang = currentExternalLang(),
+                    subtitleScale = CAST_SCALE[_ui.value.subtitleSize.coerceIn(0, 2)],
+                ),
+            )
+            val note = if (subtitleUrl == null && _ui.value.textTracks.any { it.selected }) {
+                "Los subtítulos internos del archivo no se pueden transmitir. Elige uno externo en \"Audio y subtítulos\"."
+            } else {
+                null
+            }
+            _ui.update { it.copy(cast = it.cast?.copy(state = "Cargando en el televisor…"), castMessage = note) }
+        }
+    }
+
+    /** Publica el subtítulo elegido como WebVTT (lo único que acepta el Chromecast). */
+    private fun castSubtitleUrl(host: String): String? {
+        castSubtitlePath?.let { stremio.streamServer.unregister(it) }
+        castSubtitlePath = null
+        val list = cues
+        if (_ui.value.externalSelected == null || list.isEmpty()) return null
+        val vtt = toWebVtt(list, _ui.value.subtitleOffsetMs).toByteArray(Charsets.UTF_8)
+        val p = stremio.streamServer.register(MemorySource(vtt, "text/vtt; charset=utf-8"), "subtitulos.vtt")
+        castSubtitlePath = p
+        return stremio.streamServer.lanUrl(p, host)
+    }
+
+    private fun currentExternalLang(): String? {
+        val id = _ui.value.externalSelected ?: return null
+        return _ui.value.externalSubs.firstOrNull { it.id == id }?.lang?.let { normalizeLang(it) }
+    }
+
+    /** El receptor de Google reproduce MKV con H.264 si se le anuncia como vídeo progresivo. */
+    private fun castContentType(req: PlaybackRequest): String {
+        val name = (stream?.fileName ?: req.filename ?: req.url?.substringBefore('?') ?: "").lowercase()
+        return when {
+            name.endsWith(".webm") -> "video/webm"
+            name.endsWith(".m3u8") -> "application/x-mpegurl"
+            else -> "video/mp4"
+        }
     }
 
     fun preferredSubtitleLang(): String = prefs.subtitleLang
@@ -353,6 +502,12 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     fun selectEmbeddedText(id: String) {
         val (group, index) = trackRefs[id] ?: return
         clearExternal()
+        if (cast.isConnected) {
+            cast.hideSubtitles()
+            _ui.update {
+                it.copy(castMessage = "Los subtítulos internos del archivo no se pueden transmitir. Elige uno externo.")
+            }
+        }
         player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
             .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
             .setOverrideForType(TrackSelectionOverride(group, index))
@@ -361,6 +516,7 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
 
     fun disableSubtitles() {
         clearExternal()
+        if (cast.isConnected) cast.hideSubtitles()
         player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
             .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
             .build()
@@ -448,13 +604,22 @@ class PlayerViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     override fun onCleared() {
+        // Si se sale mientras transmite, se detiene el vídeo en el televisor: el torrent se cierra.
+        if (cast.isConnected) cast.stopMedia()
+        cast.release()
         player.release()
         path?.let { stremio.streamServer.unregister(it) }
+        castSubtitlePath?.let { stremio.streamServer.unregister(it) }
         stream?.let { stremio.torrents.close(it) }
+        StreamingService.stop(getApplication())
         super.onCleared()
     }
 
     companion object {
         private const val HASH_TIMEOUT_MS = 60_000L
+        private val CAST_SCALE = floatArrayOf(0.8f, 1f, 1.3f)
+        private const val CAST_FAILED =
+            "El Chromecast no pudo reproducir este archivo. Suele ser por el formato (HEVC, 10 bits, " +
+                "audio DTS…). Prueba un stream marcado como Compatible."
     }
 }
