@@ -17,6 +17,7 @@ Código desde cero: Kotlin, Jetpack Compose (Material 3), OkHttp y Coil.
 | 4 | Google Cast SDK: botón de transmitir, traspaso celular ↔ TV, subtítulos WebVTT, control remoto, servicio en primer plano | ✅ escrita |
 | 5 | Seguimiento, siguiente episodio, notificación con controles, APK liviano | ✅ escrita |
 | 6 | Televisores DLNA (Samsung), revisión del formato real antes de transmitir, sincronización con la cuenta de Stremio | ✅ escrita |
+| 7 | Arranque con buffer (automático, esperar N s o manual) y re-buffer; etiquetas Chromecast/TV por stream con filtro | ✅ escrita |
 
 ## Compilar
 

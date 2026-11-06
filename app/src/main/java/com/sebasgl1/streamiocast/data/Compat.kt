@@ -56,6 +56,9 @@ data class StreamInfo(
     val sizeText: String?,
     val sizeBytes: Long?,
     val provider: String?,
+    /** HDR10 (o HDR10+): base que tu TV sí muestra bien. */
+    val hdr10: Boolean = false,
+    val dolbyVision: Boolean = false,
 )
 
 data class Classification(
@@ -86,6 +89,9 @@ private val R_MPEG2 = Regex("""\bmpeg-?2\b""")
 
 private val R_TEN_BIT = Regex("""\b(10[\s._-]?bits?|hi10p?)\b""")
 private val R_HDR = Regex("""\b(hdr10\+?|hdr|dv|dovi|dolby[\s._-]?vision)\b""")
+
+private val R_HDR10 = Regex("""\bhdr(10\+?)?\b""")
+private val R_DV = Regex("""\b(dv|dovi|dolby[\s._-]?vision)\b""")
 
 private val R_AAC = Regex("""\baac""")
 private val R_MP3 = Regex("""\bmp3\b""")
@@ -190,6 +196,8 @@ fun analyzeStream(s: Stream): StreamInfo {
         sizeText = sizeText,
         sizeBytes = sizeBytes,
         provider = R_PROVIDER.find(text)?.groupValues?.get(1)?.trim()?.takeIf { it.isNotEmpty() },
+        hdr10 = R_HDR10.containsMatchIn(hay),
+        dolbyVision = R_DV.containsMatchIn(hay),
     )
 }
 
@@ -280,4 +288,67 @@ fun classify(info: StreamInfo): Classification {
     }
 
     return Classification(verdict, reasons, needsRemux, needsAudioConvert)
+}
+
+// --- Veredicto para el televisor (Samsung UN43MU6100, Tizen 2017, por DLNA) ---------------
+
+/*
+ * El TV decodifica casi todo: H.264, HEVC (también 10 bits y HDR10) hasta 4K, VP9, Xvid, VC-1 y
+ * MPEG-2, en MKV, MP4, AVI o TS, con audio AAC, MP3, AC3 o E-AC3. No decodifica AV1 ni Dolby Vision.
+ * DTS, TrueHD, FLAC y Opus quedan como dudosos: no está confirmado que suenen por DLNA.
+ */
+private val TV_AUDIO_OK = setOf(AudioCodec.AAC, AudioCodec.MP3, AudioCodec.AC3, AudioCodec.EAC3)
+
+fun classifyTv(info: StreamInfo): Classification {
+    val reasons = mutableListOf<String>()
+    var bad = false
+    var maybe = false
+
+    when (info.codec) {
+        VideoCodec.AV1 -> {
+            bad = true
+            reasons += "Códec AV1: tu TV de 2017 no lo decodifica."
+        }
+        VideoCodec.MIXED -> {
+            maybe = true
+            reasons += "El nombre menciona varios códecs: no está claro cuál trae."
+        }
+        else -> Unit
+    }
+    if (info.dolbyVision && !info.hdr10) {
+        maybe = true
+        reasons += "Dolby Vision: tu TV no lo soporta. Si el archivo no trae HDR10 de respaldo, " +
+            "los colores pueden salir verdes o morados."
+    }
+    if (info.lowQuality) {
+        bad = true
+        reasons += "Grabación de cine (CAM/TS): mala calidad."
+    }
+    val unsure = info.audio.filter { it !in TV_AUDIO_OK }
+    if (info.audio.isNotEmpty() && info.audio.none { it in TV_AUDIO_OK }) {
+        maybe = true
+        reasons += "Audio ${unsure.joinToString("/") { it.label }}: no es seguro que tu TV lo reproduzca " +
+            "con sonido. Mejor uno con AC3, E-AC3 o AAC."
+    }
+    val size = info.sizeBytes
+    val res = info.resolution ?: 0
+    if (size != null && (size > 60 * GIB || (res >= 2160 && size > 40 * GIB))) {
+        maybe = true
+        reasons += "Archivo muy pesado (${info.sizeText ?: "más de 40 GB"}): el torrent difícilmente " +
+            "baja al ritmo del vídeo y se va a detener a cargar."
+    }
+
+    val verdict = when {
+        bad -> Verdict.BAD
+        maybe -> Verdict.MAYBE
+        else -> Verdict.GOOD
+    }
+    if (verdict == Verdict.GOOD) {
+        val what = listOfNotNull(
+            info.codec.takeIf { it != VideoCodec.UNKNOWN }?.label,
+            info.resolutionLabel(),
+        ).joinToString(" a ")
+        reasons.add(0, if (what.isEmpty()) "Tu TV reproduce casi todos los formatos." else "$what: tu TV lo reproduce.")
+    }
+    return Classification(verdict, reasons, needsRemux = false, needsAudioConvert = false)
 }

@@ -15,7 +15,7 @@ android {
         minSdk = 28
         targetSdk = 35
         versionCode = 1
-        versionName = "0.2.0"
+        versionName = "0.3.0"
 
         // Solo celulares de 64 bits (todos los de los últimos años): APK mucho más liviano.
         ndk {

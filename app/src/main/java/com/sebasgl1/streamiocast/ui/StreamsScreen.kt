@@ -1,9 +1,13 @@
+@file:OptIn(ExperimentalMaterial3Api::class)
+
 package com.sebasgl1.streamiocast.ui
 
 import android.app.Application
 import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,7 +30,8 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Switch
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -54,7 +59,11 @@ import com.sebasgl1.streamiocast.data.AppJson
 import com.sebasgl1.streamiocast.history.WatchTarget
 import com.sebasgl1.streamiocast.player.PlaybackRequest
 import com.sebasgl1.streamiocast.player.toPlayback
+import com.sebasgl1.streamiocast.data.Classification
+import com.sebasgl1.streamiocast.data.StreamFilter
 import com.sebasgl1.streamiocast.data.StreamResult
+import com.sebasgl1.streamiocast.data.streamComparator
+import com.sebasgl1.streamiocast.data.verdictFor
 import com.sebasgl1.streamiocast.data.Verdict
 import com.sebasgl1.streamiocast.data.VideoCodec
 import com.sebasgl1.streamiocast.data.resolutionLabel
@@ -117,15 +126,22 @@ fun StreamsScreen(
     vm: StreamsViewModel = viewModel(),
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
-    var onlyCompatible by rememberSaveable { mutableStateOf(true) }
+    val prefs = (LocalContext.current.applicationContext as StremioApp).playbackPrefs
+    var filter by rememberSaveable {
+        mutableStateOf(runCatching { StreamFilter.valueOf(prefs.streamFilter) }.getOrDefault(StreamFilter.CHROMECAST))
+    }
     var selected by remember { mutableStateOf<StreamResult?>(null) }
 
-    val visible = remember(state.results, onlyCompatible) {
-        if (onlyCompatible) state.results.filter { it.cls.verdict != Verdict.BAD } else state.results
+    val visible = remember(state.results, filter) {
+        val list = if (filter == StreamFilter.ALL) {
+            state.results
+        } else {
+            state.results.filter { it.verdictFor(filter) != Verdict.BAD }
+        }
+        list.sortedWith(streamComparator(filter))
     }
-    val good = state.results.count { it.cls.verdict == Verdict.GOOD }
-    val maybe = state.results.count { it.cls.verdict == Verdict.MAYBE }
-    val incompatible = state.results.size - good - maybe
+    val ccCount = state.results.count { it.cls.verdict != Verdict.BAD }
+    val tvCount = state.results.count { it.tv.verdict != Verdict.BAD }
 
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -151,23 +167,28 @@ fun StreamsScreen(
             }
         }
 
+        // Filtro: qué streams sirven en el aparato al que vas a transmitir.
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp),
-            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Column(Modifier.weight(1f)) {
-                Text("Solo compatibles con Chromecast", style = MaterialTheme.typography.bodyLarge)
-                if (!state.loading && state.results.isNotEmpty()) {
-                    Text(
-                        text = "$good compatibles · $maybe dudosos · $incompatible no compatibles",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+            val loaded = !state.loading && state.results.isNotEmpty()
+            listOf(
+                StreamFilter.ALL to "Todos" + if (loaded) " (${state.results.size})" else "",
+                StreamFilter.CHROMECAST to "Chromecast" + if (loaded) " ($ccCount)" else "",
+                StreamFilter.TV to "TV" + if (loaded) " ($tvCount)" else "",
+            ).forEach { (f, label) ->
+                FilterChip(
+                    selected = filter == f,
+                    onClick = {
+                        filter = f
+                        prefs.streamFilter = f.name
+                    },
+                    label = { Text(label) },
+                )
             }
-            Switch(checked = onlyCompatible, onCheckedChange = { onlyCompatible = it })
         }
 
         if (state.failures.isNotEmpty()) {
@@ -206,8 +227,9 @@ fun StreamsScreen(
                 else -> {
                     val emptyMessage = state.message
                         ?: if (state.results.isNotEmpty()) {
-                            "Todos los streams (${state.results.size}) son incompatibles con tu Chromecast. " +
-                                "Desactiva el filtro para verlos."
+                            "Ninguno de los ${state.results.size} streams sirve en " +
+                                (if (filter == StreamFilter.TV) "tu TV" else "tu Chromecast") +
+                                ". Toca \"Todos\" para verlos."
                         } else {
                             "No se encontraron streams para este título."
                         }
@@ -248,8 +270,9 @@ private fun verdictColor(verdict: Verdict): Color = when (verdict) {
     Verdict.BAD -> MaterialTheme.colorScheme.error
 }
 
+/** La palabra del aparato en verde (sirve), amarillo (dudoso) o rojo (no sirve). */
 @Composable
-private fun VerdictChip(verdict: Verdict) {
+private fun DeviceBadge(device: String, verdict: Verdict) {
     val color = verdictColor(verdict)
     val symbol = when (verdict) {
         Verdict.GOOD -> "✓"
@@ -262,7 +285,7 @@ private fun VerdictChip(verdict: Verdict) {
             .padding(horizontal = 8.dp, vertical = 2.dp),
     ) {
         Text(
-            text = "$symbol ${verdict.label}",
+            text = "$symbol $device",
             color = color,
             style = MaterialTheme.typography.labelSmall,
             fontWeight = FontWeight.SemiBold,
@@ -294,12 +317,16 @@ private fun StreamRow(item: StreamResult, onClick: () -> Unit) {
     ) {
         Column(Modifier.padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                VerdictChip(item.cls.verdict)
+                DeviceBadge("Chromecast", item.cls.verdict)
+                Spacer(Modifier.width(6.dp))
+                DeviceBadge("TV", item.tv.verdict)
                 Spacer(Modifier.width(8.dp))
                 Text(
                     text = tags.joinToString(" · "),
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
             Text(
@@ -323,19 +350,26 @@ private fun StreamRow(item: StreamResult, onClick: () -> Unit) {
 private fun StreamDialog(item: StreamResult, onMobileData: Boolean, onPlay: () -> Unit, onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        confirmButton = { Button(onClick = onPlay) { Text("Reproducir aquí") } },
+        confirmButton = { Button(onClick = onPlay) { Text("Reproducir") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cerrar") } },
-        title = { Text(item.cls.verdict.label) },
+        title = {
+            Text(
+                text = listOfNotNull(item.info.resolutionLabel(), item.info.sizeText).joinToString(" · ")
+                    .ifEmpty { "Stream" },
+            )
+        },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 Text(
                     text = item.info.releaseName,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                item.cls.reasons.forEach { reason ->
-                    Text("• $reason", style = MaterialTheme.typography.bodyMedium)
-                }
+                DeviceReasons("Chromecast", item.cls)
+                DeviceReasons("TV", item.tv)
                 if (onMobileData) {
                     Text(
                         text = "Estás con datos móviles" +
@@ -345,12 +379,22 @@ private fun StreamDialog(item: StreamResult, onMobileData: Boolean, onPlay: () -
                     )
                 }
                 Text(
-                    text = "En el celular se puede ver cualquier stream, incluso los no compatibles. " +
-                        "Para el televisor, reprodúcelo y toca el ícono de Cast arriba a la derecha.",
+                    text = "En el celular se puede ver cualquier stream. Para el televisor, reprodúcelo y " +
+                        "toca el ícono de transmitir arriba a la derecha.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.secondary,
                 )
             }
         },
     )
+}
+
+@Composable
+private fun DeviceReasons(device: String, cls: Classification) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        DeviceBadge(device, cls.verdict)
+        cls.reasons.forEach { reason ->
+            Text("• $reason", style = MaterialTheme.typography.bodySmall)
+        }
+    }
 }

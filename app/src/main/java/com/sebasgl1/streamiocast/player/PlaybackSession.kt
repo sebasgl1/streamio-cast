@@ -13,6 +13,7 @@ import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import com.sebasgl1.streamiocast.StreamingService
@@ -20,6 +21,7 @@ import com.sebasgl1.streamiocast.StremioApp
 import com.sebasgl1.streamiocast.cast.lanAddress
 import com.sebasgl1.streamiocast.data.PlaybackPrefs
 import com.sebasgl1.streamiocast.data.ProgressInput
+import com.sebasgl1.streamiocast.data.StreamFilter
 import com.sebasgl1.streamiocast.dlna.DlnaDevice
 import com.sebasgl1.streamiocast.dlna.DlnaHandoff
 import com.sebasgl1.streamiocast.dlna.dlnaMime
@@ -79,7 +81,16 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
     /** La pantalla del reproductor está a la vista. */
     var attached = false
 
+    // Arranque con buffer: cuánto vídeo descargado esperar antes de reproducir.
+    private val startMode = prefs.startMode
+    private val bufferTargetMs = prefs.bufferSeconds.coerceIn(5, 120) * 1000L
+
+    /** Abierta = ya se puede reproducir. En modo automático lo está desde el principio. */
+    private var gateOpen = startMode == PlaybackPrefs.START_AUTO
+    private var waitJob: Job? = null
+
     val player: ExoPlayer = ExoPlayer.Builder(app)
+        .setLoadControl(buildLoadControl())
         .setMediaSourceFactory(
             DefaultMediaSourceFactory(app).setDataSourceFactory(
                 // Timeouts largos: el servidor local espera a que lleguen las piezas del torrent.
@@ -96,6 +107,7 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
             title = request.title,
             isTorrent = request.infoHash != null,
             subtitleSize = prefs.subtitleSize,
+            rebufferSec = if (startMode == PlaybackPrefs.START_AUTO) null else (bufferTargetMs / 1000).toInt(),
         ),
     )
     val ui: StateFlow<PlayerUi> = _ui.asStateFlow()
@@ -131,7 +143,8 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
     private val remoteEvents: CastHandoff.Events = object : CastHandoff.Events {
         override fun onConnected(device: String) {
             _ui.update { it.copy(cast = CastUi(device), castMessage = null) }
-            if (_ui.value.phase is PlayerPhase.Playing) sendToCast(player.currentPosition)
+            // Si aún se está llenando el buffer, se manda al TV cuando termine (o le des reproducir).
+            if (_ui.value.phase is PlayerPhase.Playing && gateOpen) sendToCast(player.currentPosition)
         }
 
         override fun onDisconnected(lastPositionMs: Long) {
@@ -211,6 +224,8 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
             }
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
+                // Le diste reproducir en los controles del vídeo antes de que se llenara el buffer.
+                if (isPlaying && !gateOpen) beginPlayback()
                 _ui.update { it.copy(localPlaying = isPlaying) }
                 if (!isPlaying) {
                     saveProgress()
@@ -274,12 +289,14 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
                 val resumeAt = resumePosition(savedEntry) ?: 0L
                 player.setMediaItem(MediaItem.fromUri(url), resumeAt)
                 player.prepare()
-                player.playWhenReady = !(cast.hasConnectedDevice() || app.dlnaDevice != null)
+                // En pausa mientras se llena el buffer: el reproductor sigue descargando por delante.
+                player.playWhenReady = gateOpen && !(cast.hasConnectedDevice() || app.dlnaDevice != null)
                 _ui.update { it.copy(phase = PlayerPhase.Playing) }
                 if (resumeAt > 0) showResumeNotice(resumeAt)
+                if (!gateOpen) waitForBuffer()
 
                 if (remote != null) {
-                    sendToCast(resumeAt)
+                    if (gateOpen) sendToCast(resumeAt)
                 } else {
                     cast.adoptExistingSession()
                     // El televisor DLNA que venías usando (por ejemplo, en el episodio anterior).
@@ -292,6 +309,67 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
                 _ui.update { it.copy(phase = PlayerPhase.Failed(e.message ?: "No se pudo abrir el stream.")) }
             }
         }
+    }
+
+    /**
+     * Rebuffer: si a mitad del vídeo se acaba lo descargado, ExoPlayer espera a tener otra vez los
+     * mismos segundos antes de seguir (en vez de trabarse cada poco). Guarda un margen por encima.
+     */
+    private fun buildLoadControl(): DefaultLoadControl {
+        if (startMode == PlaybackPrefs.START_AUTO) return DefaultLoadControl()
+        val keep = maxOf(DefaultLoadControl.DEFAULT_MIN_BUFFER_MS.toLong(), bufferTargetMs + 15_000).toInt()
+        return DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                keep,
+                keep,
+                DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_MS,
+                bufferTargetMs.toInt(),
+            )
+            .build()
+    }
+
+    /** Mide los segundos de vídeo ya descargados por delante y arranca al llegar a la meta. */
+    private fun waitForBuffer() {
+        waitJob?.cancel()
+        waitJob = scope.launch {
+            // Al encadenar episodios no se espera tu toque: nadie tiene por qué estar mirando.
+            val manual = startMode == PlaybackPrefs.START_MANUAL && !request.autoNext
+            var last = 0L
+            var rate = 0.0 // ms de vídeo descargados por segundo
+            while (isActive && !gateOpen) {
+                val buffered = player.totalBufferedDuration
+                val duration = player.duration
+                val toEnd = duration != C.TIME_UNSET && duration > 0 && player.bufferedPosition >= duration - 1_000
+                // Memoria del reproductor llena (vídeos muy pesados): ya no cabe más por delante.
+                val full = player.playbackState == Player.STATE_READY && !player.isLoading && buffered > 0
+                val perSecond = (buffered - last).coerceAtLeast(0) * 2.0
+                rate = if (rate == 0.0) perSecond else rate * 0.7 + perSecond * 0.3
+                last = buffered
+                val ready = buffered >= bufferTargetMs || toEnd || full
+                val eta = if (!ready && rate > 200) ((bufferTargetMs - buffered) / rate).toInt().coerceAtLeast(1) else null
+                _ui.update {
+                    it.copy(startWait = StartWait(buffered.coerceAtMost(bufferTargetMs), bufferTargetMs, manual, ready, eta))
+                }
+                if (ready && !manual) {
+                    beginPlayback()
+                    return@launch
+                }
+                delay(500)
+            }
+        }
+    }
+
+    /** "Reproducir ya": arranca aunque no se haya llenado el buffer. */
+    fun startNow() {
+        if (!gateOpen) beginPlayback()
+    }
+
+    private fun beginPlayback() {
+        if (gateOpen) return
+        gateOpen = true
+        waitJob?.cancel()
+        _ui.update { it.copy(startWait = null) }
+        if (remote != null) sendToCast(player.currentPosition) else player.play()
     }
 
     private fun showResumeNotice(atMs: Long) {
@@ -321,6 +399,10 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
     // --- Controles (pantalla y notificación) --------------------------------------------
 
     fun togglePlay() {
+        if (!gateOpen) {
+            beginPlayback()
+            return
+        }
         val r = remote
         when {
             r != null -> r.togglePlayback()
@@ -476,7 +558,12 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
             } catch (e: Exception) {
                 null
             }
-            val pick = outcome?.let { pickNextStream(it.results, request.bingeGroup, requireCompatible = cast.isConnected) }
+            val device = when {
+                dlna.isConnected -> StreamFilter.TV
+                cast.isConnected -> StreamFilter.CHROMECAST
+                else -> StreamFilter.ALL
+            }
+            val pick = outcome?.let { pickNextStream(it.results, request.bingeGroup, device) }
             if (pick == null) {
                 _ui.update {
                     it.copy(
@@ -487,7 +574,7 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
                 return@launch
             }
             saveProgress()
-            app.startNext(pick.toPlayback(next))
+            app.startNext(pick.toPlayback(next).copy(autoNext = true))
         }
     }
 
@@ -1039,6 +1126,7 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
         saveProgress()
         isOpen = false
         countdownJob?.cancel()
+        waitJob?.cancel()
         pushSync(force = true)
         remote?.stopMedia()
         cast.release()

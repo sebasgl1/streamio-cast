@@ -1,7 +1,9 @@
 package com.sebasgl1.streamiocast.player
 
+import com.sebasgl1.streamiocast.data.StreamFilter
 import com.sebasgl1.streamiocast.data.StreamResult
 import com.sebasgl1.streamiocast.data.Verdict
+import com.sebasgl1.streamiocast.data.streamComparator
 import com.sebasgl1.streamiocast.data.Video
 
 /**
@@ -23,10 +25,14 @@ fun nextEpisodeVideo(videos: List<Video>, currentId: String): Video? {
 /**
  * Como Stremio: para el siguiente episodio se usa el stream del mismo "grupo" (misma calidad y
  * fuente, por ejemplo "torrentio|1080p|WEB-DL"). Si no hay, el mejor de la lista (ya viene ordenada).
- * Si se está transmitiendo al Chromecast, se descartan los no compatibles.
+ * Si se está transmitiendo, se descartan los que no sirven en ese aparato (Chromecast o TV).
  */
-fun pickNextStream(results: List<StreamResult>, bingeGroup: String?, requireCompatible: Boolean): StreamResult? {
-    val pool = if (requireCompatible) results.filter { it.cls.verdict != Verdict.BAD } else results
+fun pickNextStream(results: List<StreamResult>, bingeGroup: String?, device: StreamFilter): StreamResult? {
+    val pool = when (device) {
+        StreamFilter.ALL -> results
+        StreamFilter.CHROMECAST -> results.filter { it.cls.verdict != Verdict.BAD }
+        StreamFilter.TV -> results.filter { it.tv.verdict != Verdict.BAD }.sortedWith(streamComparator(StreamFilter.TV))
+    }
     if (bingeGroup != null) {
         pool.firstOrNull { it.stream.behaviorHints?.bingeGroup == bingeGroup }?.let { return it }
     }

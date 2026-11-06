@@ -8,6 +8,7 @@ import com.sebasgl1.streamiocast.data.analyzeStream
 import com.sebasgl1.streamiocast.data.classify
 import com.sebasgl1.streamiocast.data.streamComparator
 import com.sebasgl1.streamiocast.player.nextEpisodeVideo
+import com.sebasgl1.streamiocast.data.StreamFilter
 import com.sebasgl1.streamiocast.player.pickNextStream
 import com.sebasgl1.streamiocast.torrent.formatBytes
 import com.sebasgl1.streamiocast.torrent.hasRoomFor
@@ -49,9 +50,9 @@ class NextEpisodeTest {
         val a = result("Show.S01E02.1080p.WEB.x264.AAC\n👤 500", "torrentio|1080p|WEB")
         val b = result("Show.S01E02.1080p.BluRay.x264.AAC\n👤 20", "torrentio|1080p|BluRay")
         val list = listOf(a, b).sortedWith(streamComparator)
-        assertEquals(b, pickNextStream(list, "torrentio|1080p|BluRay", requireCompatible = false))
-        assertEquals(a, pickNextStream(list, "otro-grupo", requireCompatible = false))
-        assertEquals(a, pickNextStream(list, null, requireCompatible = false))
+        assertEquals(b, pickNextStream(list, "torrentio|1080p|BluRay", device = StreamFilter.ALL))
+        assertEquals(a, pickNextStream(list, "otro-grupo", device = StreamFilter.ALL))
+        assertEquals(a, pickNextStream(list, null, device = StreamFilter.ALL))
     }
 
     @Test
@@ -59,9 +60,9 @@ class NextEpisodeTest {
         val hevc = result("Show.S01E02.2160p.x265.HDR\n👤 900", "g", name = "Torrentio\n4k HDR")
         val ok = result("Show.S01E02.720p.x264.AAC\n👤 10", "h", name = "Torrentio\n720p")
         val list = listOf(hevc, ok).sortedWith(streamComparator)
-        assertEquals(ok, pickNextStream(list, "g", requireCompatible = true))
-        assertEquals(hevc, pickNextStream(listOf(hevc, ok), "g", requireCompatible = false))
-        assertNull(pickNextStream(listOf(hevc), null, requireCompatible = true))
+        assertEquals(ok, pickNextStream(list, "g", device = StreamFilter.CHROMECAST))
+        assertEquals(hevc, pickNextStream(listOf(hevc, ok), "g", device = StreamFilter.ALL))
+        assertNull(pickNextStream(listOf(hevc), null, device = StreamFilter.CHROMECAST))
     }
 
     @Test

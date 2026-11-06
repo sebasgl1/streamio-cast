@@ -35,6 +35,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -173,9 +174,10 @@ fun PlayerScreen(onBack: () -> Unit, model: PlayerViewModel = viewModel()) {
                 }
 
                 val stats = ui.stats
-                if (ui.buffering && stats != null) {
+                if (ui.buffering && stats != null && ui.startWait == null) {
                     Text(
-                        text = "Cargando · ${statsLine(stats)}",
+                        text = (ui.rebufferSec?.let { "Llenando $it s de buffer" } ?: "Cargando") +
+                            " · ${statsLine(stats)}",
                         color = Color.White,
                         style = MaterialTheme.typography.bodySmall,
                         modifier = Modifier
@@ -247,6 +249,20 @@ fun PlayerScreen(onBack: () -> Unit, model: PlayerViewModel = viewModel()) {
             ) {
                 Text("Retomando en ${formatTime(at)}", color = Color.White)
                 TextButton(onClick = vm::restartFromBeginning) { Text("Desde el inicio") }
+            }
+        }
+
+        ui.startWait?.let { wait ->
+            if (ui.phase is PlayerPhase.Playing) {
+                StartWaitCard(
+                    wait = wait,
+                    stats = ui.stats,
+                    casting = castUi != null,
+                    onStart = vm::startNow,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(start = 16.dp, end = 16.dp, bottom = 120.dp),
+                )
             }
         }
 
@@ -504,6 +520,56 @@ private fun OptionRow(label: String, selected: Boolean, onClick: () -> Unit) {
         RadioButton(selected = selected, onClick = null)
         Spacer(Modifier.width(8.dp))
         Text(label, style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
+/** Mientras se llena el buffer: cuánto hay, cuánto falta y el botón para arrancar ya. */
+@Composable
+private fun StartWaitCard(
+    wait: StartWait,
+    stats: TorrentStats?,
+    casting: Boolean,
+    onStart: () -> Unit,
+    modifier: Modifier,
+) {
+    val have = (wait.bufferedMs / 1000).toInt()
+    val goal = (wait.targetMs / 1000).toInt()
+    Column(
+        modifier = modifier
+            .width(320.dp)
+            .background(Color.Black.copy(alpha = 0.8f), RoundedCornerShape(12.dp))
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            text = when {
+                wait.ready && wait.manual -> "Buffer listo: $goal s"
+                wait.ready -> "Buffer listo, arrancando…"
+                else -> "Llenando el buffer: $have de $goal s"
+            },
+            color = Color.White,
+            style = MaterialTheme.typography.titleSmall,
+        )
+        LinearProgressIndicator(
+            progress = { if (goal > 0) (have.toFloat() / goal).coerceIn(0f, 1f) else 1f },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        val detail = listOfNotNull(
+            wait.etaSec?.takeIf { !wait.ready }?.let { "listo en ~$it s" },
+            stats?.let { statsLine(it) },
+        ).joinToString(" · ")
+        if (detail.isNotEmpty()) {
+            Text(detail, color = Color.White.copy(alpha = 0.7f), style = MaterialTheme.typography.bodySmall)
+        }
+        Button(onClick = onStart, modifier = Modifier.align(Alignment.End)) {
+            Text(
+                when {
+                    casting && wait.ready -> "Reproducir en el TV"
+                    wait.ready -> "Reproducir"
+                    else -> "Reproducir ya"
+                },
+            )
+        }
     }
 }
 

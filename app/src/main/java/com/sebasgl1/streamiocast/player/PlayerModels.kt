@@ -19,6 +19,8 @@ data class PlaybackRequest(
     val streamSubtitles: List<SubtitleItem> = emptyList(),
     /** Grupo del stream ("torrentio|1080p|WEB-DL"): para elegir el del siguiente episodio. */
     val bingeGroup: String? = null,
+    /** Lo abrió el paso automático al siguiente episodio (no espera a que le des reproducir). */
+    val autoNext: Boolean = false,
 ) {
     val title: String
         get() = target.displayTitle
@@ -96,4 +98,19 @@ data class PlayerUi(
     /** Segundos para pasar solo al siguiente episodio. */
     val nextCountdown: Int? = null,
     val nextLoading: Boolean = false,
+    /** No nulo mientras se espera el buffer antes de arrancar. */
+    val startWait: StartWait? = null,
+    /** Segundos de buffer que se esperan si el vídeo se queda sin descargado (null = automático). */
+    val rebufferSec: Int? = null,
+)
+
+/** Espera antes de reproducir: cuánto vídeo hay descargado por delante y cuánto falta. */
+data class StartWait(
+    val bufferedMs: Long,
+    val targetMs: Long,
+    /** Modo manual: no arranca solo, aunque se llene. */
+    val manual: Boolean,
+    val ready: Boolean,
+    /** Segundos estimados para llenarse, si se puede calcular. */
+    val etaSec: Int?,
 )
