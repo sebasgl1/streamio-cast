@@ -960,6 +960,7 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
                     subtitleScale = 1f,
                     videoMime = dlnaMime(name, dlna.device?.isSamsung == true),
                     srtUrl = srt,
+                    durationMs = knownDurationMs(),
                 )
             } else {
                 val (tracks, activeTrack) = if (host != null) castSubtitleTracks(host) else noTracks()
@@ -990,6 +991,10 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
             }
         }
     }
+
+    /** La duración que leyó el reproductor del celular (0 si aún no la sabe). */
+    private fun knownDurationMs(): Long =
+        player.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: savedEntry?.durationMs ?: 0L
 
     /** El subtítulo elegido en SRT, para televisores DLNA (Samsung). */
     private fun dlnaSubtitleUrl(host: String): String? {
@@ -1120,8 +1125,12 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
         else -> "No se pudo reproducir (${error.errorCodeName})."
     }
 
-    /** Guarda dónde ibas y libera todo: torrent, servidor, reproductor y vídeo en el televisor. */
-    fun close() {
+    /**
+     * Guarda dónde ibas y libera todo: torrent, servidor, reproductor y vídeo en el televisor.
+     * [keepService]: se pasa al siguiente episodio; el servicio sigue para que Android no corte
+     * la descarga (con la app en segundo plano no se podría volver a iniciar).
+     */
+    fun close(keepService: Boolean = false) {
         if (!isOpen) return
         saveProgress()
         isOpen = false
@@ -1135,7 +1144,7 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
         path?.let { app.streamServer.unregister(it) }
         clearCastSubtitles()
         stream?.let { app.torrents.close(it) }
-        StreamingService.stop(app)
+        if (!keepService) StreamingService.stop(app)
         scope.cancel()
     }
 

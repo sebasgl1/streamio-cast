@@ -39,6 +39,8 @@ data class CastMedia(
     val videoMime: String = "video/mp4",
     /** Subtítulo en SRT (televisores DLNA/Samsung). */
     val srtUrl: String? = null,
+    /** Duración que ya conoce el celular (los TV DLNA a veces no la informan). 0 = desconocida. */
+    val durationMs: Long = 0,
 )
 
 /**
@@ -60,6 +62,15 @@ class CastHandoff(context: Context, private val events: Events) : RemotePlayer {
     private val castContext: CastContext? = runCatching { CastContext.getSharedInstance(context) }.getOrNull()
     private var session: CastSession? = null
     private var lastPositionMs = 0L
+
+    /**
+     * "Terminó" o "falló" solo cuentan para un vídeo que cargó esta sesión y que llegó a sonar.
+     * Al pasar al siguiente episodio, el Chromecast aún muestra el estado del anterior ("terminó"),
+     * y sin esto la sesión nueva creería que su vídeo ya acabó.
+     */
+    private var loadedHere = false
+    private var started = false
+    private var endReported = false
 
     override val isConnected: Boolean
         get() = session?.isConnected == true
@@ -152,6 +163,9 @@ class CastHandoff(context: Context, private val events: Events) : RemotePlayer {
             .apply { if (active != null) setActiveTrackIds(longArrayOf(active)) }
             .build()
         lastPositionMs = media.startAtMs
+        loadedHere = true
+        started = false
+        endReported = false
         remote.load(request)
     }
 
@@ -200,8 +214,15 @@ class CastHandoff(context: Context, private val events: Events) : RemotePlayer {
     private fun publishStatus() {
         val status = session?.remoteMediaClient?.mediaStatus ?: return
         val idle = status.playerState == MediaStatus.PLAYER_STATE_IDLE
-        val failed = idle && status.idleReason == MediaStatus.IDLE_REASON_ERROR
-        val finished = idle && status.idleReason == MediaStatus.IDLE_REASON_FINISHED
+        if (status.playerState == MediaStatus.PLAYER_STATE_PLAYING ||
+            status.playerState == MediaStatus.PLAYER_STATE_PAUSED
+        ) {
+            started = true
+        }
+        val failed = loadedHere && !endReported && idle && status.idleReason == MediaStatus.IDLE_REASON_ERROR
+        val finished = loadedHere && started && !endReported && idle &&
+            status.idleReason == MediaStatus.IDLE_REASON_FINISHED
+        if (failed || finished) endReported = true
         val state = when (status.playerState) {
             MediaStatus.PLAYER_STATE_PLAYING -> "Reproduciendo"
             MediaStatus.PLAYER_STATE_PAUSED -> "En pausa"

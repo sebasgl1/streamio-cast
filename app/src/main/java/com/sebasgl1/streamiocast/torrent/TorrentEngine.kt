@@ -56,6 +56,14 @@ class TorrentEngine(context: Context) {
     private val session = SessionManager(false)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    /**
+     * Cuántas reproducciones usan cada torrent. Los packs de temporada traen todos los episodios en
+     * un mismo torrent: al pasar al siguiente, el torrent se reutiliza y no se debe borrar.
+     */
+    private val users = HashMap<String, Int>()
+
+    private fun users(hash: String): Int = synchronized(users) { users[hash] ?: 0 }
+
     private fun ensureStarted() = synchronized(this) {
         if (!session.isRunning) {
             // Restos de una sesión anterior (la app se cerró a medias): fuera.
@@ -75,6 +83,9 @@ class TorrentEngine(context: Context) {
             val hash = req.infoHash.lowercase()
             val sha1 = Sha1Hash.parseHex(hash)
             var returned = false
+            // Se marca en uso de una vez: si el episodio anterior (mismo pack) se está cerrando,
+            // así no borra el torrent que se va a reutilizar.
+            synchronized(users) { users[hash] = (users[hash] ?: 0) + 1 }
             try {
                 session.download(buildMagnet(hash, req.trackers), saveDir, TorrentFlags.SEQUENTIAL_DOWNLOAD)
                 onProgress("Buscando peers…")
@@ -115,6 +126,8 @@ class TorrentEngine(context: Context) {
                     )
                 }
 
+                // Torrent reutilizado: fuera las urgencias que dejó el archivo anterior.
+                h.clearPieceDeadlines()
                 // Solo el archivo elegido; los demás (muestras, subtítulos, .nfo) se ignoran.
                 h.prioritizeFiles(Array(count) { if (it == index) Priority.TOP_PRIORITY else Priority.IGNORE })
 
@@ -126,9 +139,16 @@ class TorrentEngine(context: Context) {
                 val file = File(files.filePath(index, saveDir.absolutePath))
                 onProgress("Cargando el vídeo…")
                 returned = true
-                TorrentStream(h, file, span, mimeTypeFor(names[index]), names[index])
+                TorrentStream(h, file, span, mimeTypeFor(names[index]), names[index], hash)
             } finally {
-                if (!returned) discard(sha1)
+                if (!returned) {
+                    val left = synchronized(users) {
+                        val n = (users[hash] ?: 1) - 1
+                        if (n <= 0) users.remove(hash) else users[hash] = n
+                        n
+                    }
+                    if (left <= 0) discard(sha1)
+                }
             }
         }
 
@@ -147,10 +167,15 @@ class TorrentEngine(context: Context) {
     /** Detiene el torrent y borra lo descargado (no queremos llenar el celular). */
     fun close(stream: TorrentStream) {
         stream.close()
+        synchronized(users) {
+            val n = (users[stream.hash] ?: 1) - 1
+            if (n <= 0) users.remove(stream.hash) else users[stream.hash] = n
+        }
         scope.launch {
             // Da tiempo a que los hilos del servidor que aún leen vean "cerrado" y salgan
-            // antes de destruir el torrent.
+            // antes de destruir el torrent. Si otra reproducción lo tomó (pack), se deja.
             delay(2_000)
+            if (users(stream.hash) > 0) return@launch
             runCatching {
                 if (stream.handle.isValid) session.remove(stream.handle, SessionHandle.DELETE_FILES)
             }
@@ -173,6 +198,7 @@ class TorrentStream internal constructor(
     private val span: PieceSpan,
     override val mimeType: String,
     val fileName: String,
+    internal val hash: String,
 ) : StreamSource {
 
     override val length: Long
@@ -208,15 +234,26 @@ class TorrentStream internal constructor(
     private fun awaitPiece(piece: Int, isCancelled: () -> Boolean) {
         ensureOpen()
         if (piece != lastPrefetch) {
+            val previous = lastPrefetch
             lastPrefetch = piece
+            // Salto lejos (adelantaste o retomaste): las urgencias de la zona anterior ya no sirven
+            // y le quitarían velocidad a la nueva.
+            if (previous >= 0 && (piece < previous || piece > previous + window)) handle.clearPieceDeadlines()
             prefetch(piece)
         }
         val limit = System.currentTimeMillis() + WAIT_LIMIT_MS
+        var nextNudge = System.currentTimeMillis() + NUDGE_MS
         while (true) {
             ensureOpen()
             if (handle.havePiece(piece)) return
             if (isCancelled()) throw InterruptedIOException("Lectura cancelada")
-            if (System.currentTimeMillis() > limit) throw SocketTimeoutException("La pieza $piece no llegó a tiempo")
+            val now = System.currentTimeMillis()
+            if (now > limit) throw SocketTimeoutException("La pieza $piece no llegó a tiempo")
+            if (now >= nextNudge) {
+                // Otro lector (el TV suele abrir dos conexiones) pudo borrar la urgencia: se renueva.
+                nextNudge = now + NUDGE_MS
+                prefetch(piece)
+            }
             Thread.sleep(150)
         }
     }
@@ -275,5 +312,6 @@ class TorrentStream internal constructor(
 
     companion object {
         private const val WAIT_LIMIT_MS = 180_000L
+        private const val NUDGE_MS = 3_000L
     }
 }

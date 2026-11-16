@@ -41,6 +41,12 @@ class DlnaHandoff(private val events: CastHandoff.Events) : RemotePlayer {
     private var playing = false
     private var finishedSent = false
 
+    /** El vídeo que cargamos llegó a sonar (antes de eso, "detenido" es el estado anterior). */
+    private var started = false
+
+    /** Duración que ya conocía el celular, por si el TV no la informa. */
+    private var knownDuration = 0L
+
     override val isConnected: Boolean
         get() = device != null
 
@@ -59,6 +65,9 @@ class DlnaHandoff(private val events: CastHandoff.Events) : RemotePlayer {
         pollJob?.cancel()
         loadJob?.cancel()
         finishedSent = false
+        started = false
+        knownDuration = media.durationMs
+        duration = media.durationMs
         lastPosition = media.startAtMs
         loadJob = scope.launch {
             try {
@@ -96,14 +105,18 @@ class DlnaHandoff(private val events: CastHandoff.Events) : RemotePlayer {
             while (isActive && device == d) {
                 try {
                     val position = soap(d, "GetPositionInfo", listOf("InstanceID" to "0"))
-                    parseDlnaTime(soapValue(position, "RelTime"))?.let { lastPosition = it }
-                    parseDlnaTime(soapValue(position, "TrackDuration"))?.takeIf { it > 0 }?.let { duration = it }
                     val state = transportState(d)
                     failures = 0
+                    val stopped = state == "STOPPED" || state == "NO_MEDIA_PRESENT"
+                    if (state == "PLAYING" || state == "PAUSED_PLAYBACK") started = true
+                    // Al terminar, muchos TV vuelven la posición a 0:00: se conserva la última real.
+                    if (!stopped) parseDlnaTime(soapValue(position, "RelTime"))?.let { lastPosition = it }
+                    parseDlnaTime(soapValue(position, "TrackDuration"))?.takeIf { it > 0 }?.let { duration = it }
+                    if (duration <= 0) duration = knownDuration
                     playing = state == "PLAYING"
                     events.onProgress(lastPosition, duration)
-                    val nearEnd = duration > 0 && lastPosition >= duration - 15_000
-                    val finished = state == "STOPPED" && nearEnd && !finishedSent
+                    val nearEnd = duration > 0 && lastPosition >= duration - 30_000
+                    val finished = stopped && started && nearEnd && !finishedSent
                     if (finished) finishedSent = true
                     events.onStatus(stateLabel(state, nearEnd), playing, failed = false, finished = finished)
                 } catch (e: IOException) {

@@ -50,13 +50,13 @@ class StremioApp : Application() {
     }
 
     /** La sesión abierta, o una nueva con el stream pendiente. Solo desde el hilo principal. */
-    fun obtainSession(): PlaybackSession? {
+    fun obtainSession(keepService: Boolean = false): PlaybackSession? {
         val pending = pendingPlayback
         val current = session?.takeIf { it.isOpen }
         if (current != null && pending == null) return current
         if (pending == null) return null
         // Se eligió otro stream: el anterior se cierra.
-        current?.close()
+        current?.close(keepService)
         pendingPlayback = null
         return PlaybackSession(this, pending).also { _session.value = it }
     }
@@ -65,7 +65,7 @@ class StremioApp : Application() {
     fun startNext(request: PlaybackRequest) {
         val wasAttached = session?.attached == true
         pendingPlayback = request
-        obtainSession()?.attached = wasAttached
+        obtainSession(keepService = true)?.attached = wasAttached
     }
 
     fun closeSession() {
