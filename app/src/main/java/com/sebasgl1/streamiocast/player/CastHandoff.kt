@@ -41,6 +41,8 @@ data class CastMedia(
     val srtUrl: String? = null,
     /** Duración que ya conoce el celular (los TV DLNA a veces no la informan). 0 = desconocida. */
     val durationMs: Long = 0,
+    /** Vídeo convertido en el celular: se va generando, sin tamaño conocido ni salto por bytes. */
+    val live: Boolean = false,
 )
 
 /**
@@ -142,6 +144,7 @@ class CastHandoff(context: Context, private val events: Events) : RemotePlayer {
             .setContentType(media.contentType)
             .setMetadata(metadata)
             .setTextTrackStyle(textStyle(media.subtitleScale))
+        if (media.live && media.durationMs > 0) builder.setStreamDuration(media.durationMs)
         if (media.subtitleTracks.isNotEmpty()) {
             builder.setMediaTracks(
                 media.subtitleTracks.map { track ->

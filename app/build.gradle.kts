@@ -15,7 +15,7 @@ android {
         minSdk = 28
         targetSdk = 35
         versionCode = 1
-        versionName = "0.4.0"
+        versionName = "0.5.0"
 
         // Solo celulares de 64 bits (todos los de los últimos años): APK mucho más liviano.
         ndk {
@@ -100,6 +100,10 @@ dependencies {
     // Motor de torrents (libtorrent) + binario nativo para celulares ARM de 64 bits
     implementation("org.libtorrent4j:libtorrent4j:2.1.0-39")
     implementation("org.libtorrent4j:libtorrent4j-android-arm64:2.1.0-39")
+
+    // FFmpeg: convierte en el celular el audio (o el vídeo) que el televisor no reproduce.
+    // Versión mantenida por la comunidad de FFmpegKit (el original se retiró en 2025).
+    implementation("io.github.jamaismagic.ffmpeg:ffmpeg-kit-lts-16kb:6.1.7")
 
     testImplementation("junit:junit:4.13.2")
 }

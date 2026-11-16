@@ -11,3 +11,8 @@
 
 # Modelos serializados (kotlinx.serialization trae sus reglas; esto es por las dudas).
 -keep @kotlinx.serialization.Serializable class com.sebasgl1.streamiocast.** { *; }
+
+# FFmpegKit: el código nativo llama a estas clases Java por su nombre (JNI).
+-keep class com.arthenica.ffmpegkit.** { *; }
+-keep class com.arthenica.smartexception.** { *; }
+-dontwarn com.arthenica.**

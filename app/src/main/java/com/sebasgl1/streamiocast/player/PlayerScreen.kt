@@ -674,16 +674,47 @@ private fun CastPanel(ui: PlayerUi, cast: CastUi, vm: PlaybackSession, modifier:
                 style = MaterialTheme.typography.bodyMedium,
                 textAlign = TextAlign.Center,
             )
+            val offer = ui.convertOffer
+            if (offer != null) {
+                // Se puede arreglar en el celular: se dice exactamente qué se haría y qué cuesta.
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color.White.copy(alpha = 0.08f), RoundedCornerShape(12.dp))
+                        .padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        text = "Puedo arreglarlo en el celular",
+                        color = Color.White,
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                    Text(offer.what, color = Color.White.copy(alpha = 0.9f), style = MaterialTheme.typography.bodyMedium)
+                    Text(offer.cost, color = Color.White.copy(alpha = 0.6f), style = MaterialTheme.typography.bodySmall)
+                    Button(onClick = vm::convertAndCast, modifier = Modifier.align(Alignment.End)) {
+                        Text("Convertir en el celular")
+                    }
+                }
+            } else {
+                Text(
+                    text = "Elige otro stream marcado en verde para ${cast.device}, o intenta igual.",
+                    color = Color.White.copy(alpha = 0.7f),
+                    style = MaterialTheme.typography.bodySmall,
+                    textAlign = TextAlign.Center,
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedButton(onClick = vm::forceCast) { Text("Intentar igual", color = Color.White) }
+                OutlinedButton(onClick = vm::stopCasting) { Text("Ver en el celular", color = Color.White) }
+            }
+        }
+        ui.converting?.let { status ->
             Text(
-                text = "Elige otro stream marcado en verde para ${cast.device}, o intenta igual.",
-                color = Color.White.copy(alpha = 0.7f),
+                text = "⚙ $status",
+                color = Color(0xFF8AB4F8),
                 style = MaterialTheme.typography.bodySmall,
                 textAlign = TextAlign.Center,
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedButton(onClick = vm::forceCast) { Text("Intentar igual", color = Color.White) }
-                Button(onClick = vm::stopCasting) { Text("Ver en el celular") }
-            }
         }
         ui.stats?.let { stats ->
             Text(

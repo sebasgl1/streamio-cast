@@ -6,6 +6,7 @@ import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import com.sebasgl1.streamiocast.dlna.DLNA_LIVE_HEADERS
 import com.sebasgl1.streamiocast.dlna.DLNA_VIDEO_HEADERS
 import java.net.InetSocketAddress
 import java.net.ServerSocket
@@ -19,6 +20,7 @@ import kotlin.math.min
 
 /** Algo que se puede servir por HTTP mientras todavía se está descargando. */
 interface StreamSource {
+    /** Tamaño en bytes, o negativo si aún no se sabe (vídeo que se está convirtiendo). */
     val length: Long
     val mimeType: String
 
@@ -86,10 +88,44 @@ class LocalStreamServer {
 
     private val extraHeaders = ConcurrentHashMap<String, Map<String, String>>()
 
-    private fun headersFor(token: String, mimeType: String): Map<String, String> {
+    private fun headersFor(token: String, mimeType: String, live: Boolean = false): Map<String, String> {
         // Los televisores DLNA piden estas cabeceras para reproducir y poder adelantar.
-        val dlna = if (mimeType.startsWith("video/")) DLNA_VIDEO_HEADERS else emptyMap()
+        val dlna = when {
+            !mimeType.startsWith("video/") -> emptyMap()
+            live -> DLNA_LIVE_HEADERS
+            else -> DLNA_VIDEO_HEADERS
+        }
         return dlna + extraHeaders[token].orEmpty()
+    }
+
+    /**
+     * Vídeo que se va generando (conversión): no se sabe el tamaño final, así que se manda sin
+     * Content-Length hasta que termina y se cierra la conexión. Si el aparato se reconecta a mitad
+     * (Range), sigue desde ese byte.
+     */
+    private fun serveLive(
+        out: OutputStream,
+        token: String,
+        source: StreamSource,
+        method: String,
+        rangeHeader: String?,
+        isCancelled: () -> Boolean,
+    ) {
+        val from = rangeHeader
+            ?.trim()
+            ?.removePrefix("bytes=")
+            ?.substringBefore('-')
+            ?.toLongOrNull()
+            ?.coerceAtLeast(0)
+            ?: 0L
+        val headers = mapOf("Content-Type" to source.mimeType, "Accept-Ranges" to "none") +
+            headersFor(token, source.mimeType, live = true)
+        if (from > 0) {
+            writeHead(out, 206, "Partial Content", headers + mapOf("Content-Range" to "bytes $from-/*"))
+        } else {
+            writeHead(out, 200, "OK", headers)
+        }
+        if (method == "GET") sendBody(out, source, from, Long.MAX_VALUE - 1, isCancelled)
     }
 
     fun localUrl(path: String): String = "http://127.0.0.1:$port$path"
@@ -151,6 +187,11 @@ class LocalStreamServer {
 
                 val length = source.length
                 val isCancelled = { peerClosed(sock, input) }
+                if (length < 0) {
+                    serveLive(out, token, source, method, headers["range"], isCancelled)
+                    out.flush()
+                    return
+                }
                 when (val range = parseRange(headers["range"], length)) {
                     RangeResult.Unsatisfiable -> writeHead(
                         out, 416, "Range Not Satisfiable",
@@ -214,6 +255,8 @@ class LocalStreamServer {
             val n = source.read(position, buffer, 0, want, isCancelled)
             if (n <= 0) break
             out.write(buffer, 0, n)
+            // Trozos pequeños (vídeo en vivo): que salgan ya, sin esperar a llenar el búfer.
+            if (n < buffer.size) out.flush()
             position += n
         }
     }

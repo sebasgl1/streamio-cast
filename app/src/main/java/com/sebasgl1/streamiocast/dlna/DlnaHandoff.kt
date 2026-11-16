@@ -72,7 +72,7 @@ class DlnaHandoff(private val events: CastHandoff.Events) : RemotePlayer {
         loadJob = scope.launch {
             try {
                 runCatching { soap(d, "Stop", listOf("InstanceID" to "0")) }
-                val metadata = didlLite(media.title, media.url, media.videoMime, media.srtUrl)
+                val metadata = didlLite(media.title, media.url, media.videoMime, media.srtUrl, media.live, media.durationMs)
                 soap(
                     d,
                     "SetAVTransportURI",

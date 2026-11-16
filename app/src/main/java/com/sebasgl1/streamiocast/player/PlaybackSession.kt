@@ -43,6 +43,13 @@ import com.sebasgl1.streamiocast.subtitles.normalizeLang
 import com.sebasgl1.streamiocast.subtitles.toSrt
 import com.sebasgl1.streamiocast.subtitles.toWebVtt
 import com.sebasgl1.streamiocast.torrent.TorrentRequest
+import com.sebasgl1.streamiocast.torrent.formatBytes
+import com.sebasgl1.streamiocast.transcode.AudioPick
+import com.sebasgl1.streamiocast.transcode.ConvertPlan
+import com.sebasgl1.streamiocast.transcode.Transcoder
+import com.sebasgl1.streamiocast.transcode.planForCast
+import com.sebasgl1.streamiocast.transcode.planForTv
+import java.io.File
 import com.sebasgl1.streamiocast.torrent.TorrentStream
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -147,7 +154,10 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
 
     private val remoteEvents: CastHandoff.Events = object : CastHandoff.Events {
         override fun onConnected(device: String) {
-            _ui.update { it.copy(cast = CastUi(device), castMessage = null) }
+            // Aparato nuevo: lo que se convertía para el anterior ya no aplica.
+            dropConversion()
+            remoteLoaded = false
+            _ui.update { it.copy(cast = CastUi(device), castMessage = null, castBlocked = null) }
             // Si aún se está llenando el buffer, se manda al TV cuando termine (o le des reproducir).
             if (_ui.value.phase is PlayerPhase.Playing && gateOpen) sendToCast(player.currentPosition)
         }
@@ -155,11 +165,14 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
         override fun onDisconnected(lastPositionMs: Long) {
             // Se pasó de un aparato a otro (por ejemplo, del Chromecast al TV): nada que hacer.
             if (remote != null) return
+            val lastPositionMs = lastPositionMs + convertShift()
+            dropConversion()
+            remoteLoaded = false
             app.dlnaDevice = null
             saveProgress()
             castJob?.cancel()
             clearCastSubtitles()
-            _ui.update { it.copy(cast = null, castMessage = null) }
+            _ui.update { it.copy(cast = null, castMessage = null, castBlocked = null, convertOffer = null, converting = null) }
             if (!attached) {
                 // Nadie está mirando el celular: se termina la reproducción.
                 closeLater()
@@ -184,7 +197,11 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
         }
 
         override fun onProgress(positionMs: Long, durationMs: Long) {
-            _ui.update { s -> s.copy(cast = s.cast?.copy(positionMs = positionMs, durationMs = durationMs)) }
+            // Convertido: el aparato cuenta desde donde empezó la conversión y no sabe la duración.
+            val converting = convertPlan != null
+            val position = pendingSeekMs ?: (positionMs + convertShift())
+            val duration = if (converting) lastKnownDuration.takeIf { it > 0 } ?: (durationMs + convertShift()) else durationMs
+            _ui.update { s -> s.copy(cast = s.cast?.copy(positionMs = position, durationMs = duration)) }
         }
 
         override fun onConnectFailed() {
@@ -210,6 +227,30 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
 
     // Sincronización con la cuenta de Stremio.
     private var lastPush = 0L
+
+    // --- Conversión en el celular (FFmpeg) ------------------------------------------------
+    /** El plan que la persona aceptó; mientras no sea null, al TV le llega la versión convertida. */
+    private var convertPlan: ConvertPlan? = null
+
+    /** El plan ofrecido, a la espera de que toque "Convertir en el celular". */
+    private var offeredPlan: ConvertPlan? = null
+    private var transcoder: Transcoder? = null
+    private var convertPath: String? = null
+
+    /** Desde qué punto del vídeo empieza la versión convertida (el TV cuenta desde 0). */
+    private var convertBaseMs = 0L
+    private var convertWatch: Job? = null
+    private var convertSeekJob: Job? = null
+    private var pendingSeekMs: Long? = null
+
+    /** El aparato ya tiene cargado nuestro vídeo (para saber de dónde tomar la posición). */
+    private var remoteLoaded = false
+    private var lastKnownDuration = 0L
+
+    private fun convertShift(): Long = if (convertPlan != null) convertBaseMs else 0L
+
+    /** Posición real en el vídeo de lo que suena en el aparato. */
+    private fun remotePos(): Long = pendingSeekMs ?: ((remote?.positionMs ?: 0L) + convertShift())
 
     init {
         // Idiomas preferidos para las pistas que vienen dentro del archivo.
@@ -386,8 +427,7 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
     }
 
     fun restartFromBeginning() {
-        val r = remote
-        if (r != null) r.seek(0) else player.seekTo(0)
+        if (remote != null) castSeek(0) else player.seekTo(0)
         _ui.update { it.copy(resumedFromMs = null) }
     }
 
@@ -587,7 +627,7 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
                 return@launch
             }
             saveProgress()
-            app.startNext(pick.toPlayback(next).copy(autoNext = true))
+            app.startNext(pick.toPlayback(next).copy(autoNext = true, autoConvert = convertPlan != null))
         }
     }
 
@@ -673,7 +713,7 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
                 }
             }
             // En el televisor los subtítulos van dentro de la carga: se recarga donde iba.
-            remote?.let { sendToCast(it.positionMs) }
+            if (remote != null) sendToCast(remotePos())
         }
     }
 
@@ -700,7 +740,7 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
                 shiftJob?.cancel()
                 shiftJob = scope.launch {
                     delay(1200)
-                    sendToCast(remote?.positionMs ?: 0)
+                    sendToCast(remotePos())
                 }
             }
         }
@@ -764,7 +804,7 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
         clearExternal()
         remote?.let { r ->
             r.hideSubtitles()
-            if (r === dlna) sendToCast(r.positionMs)
+            if (r === dlna) sendToCast(remotePos())
             _ui.update {
                 it.copy(castMessage = "Los subtítulos internos del archivo no se pueden transmitir. Elige uno externo.")
             }
@@ -785,7 +825,7 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
         clearExternal()
         remote?.let { r ->
             r.hideSubtitles()
-            if (r === dlna) sendToCast(r.positionMs) // el TV DLNA solo los quita recargando
+            if (r === dlna) sendToCast(remotePos()) // el TV DLNA solo los quita recargando
         }
         player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
             .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
@@ -870,14 +910,28 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
     }
 
     fun castSeek(positionMs: Long) {
-        remote?.seek(positionMs)
+        val r = remote ?: return
+        if (convertPlan == null) {
+            r.seek(positionMs)
+            return
+        }
+        // Convertido: adelantar es volver a convertir desde ese punto. Se espera a que dejes de
+        // tocar para no relanzar FFmpeg con cada toque.
+        val target = positionMs.coerceAtLeast(0)
+        pendingSeekMs = target
+        _ui.update { s -> s.copy(cast = s.cast?.copy(positionMs = target, state = "Saltando…")) }
+        convertSeekJob?.cancel()
+        convertSeekJob = scope.launch {
+            delay(800)
+            sendToCast(target)
+        }
     }
 
     fun castSkip(deltaMs: Long) {
-        val r = remote ?: return
+        if (remote == null) return
         val c = _ui.value.cast ?: return
         val max = if (c.durationMs > 0) c.durationMs else Long.MAX_VALUE
-        r.seek((r.positionMs + deltaMs).coerceIn(0, max))
+        castSeek((remotePos() + deltaMs).coerceIn(0, max))
     }
 
     fun stopCasting() {
@@ -905,8 +959,142 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
 
     /** El vídeo no pasó la revisión de formato, pero quieres intentarlo igual. */
     fun forceCast() {
-        _ui.update { it.copy(castBlocked = null) }
-        sendToCast(player.currentPosition, force = true)
+        dropConversion()
+        _ui.update { it.copy(castBlocked = null, convertOffer = null) }
+        sendToCast(castStartPosition(), force = true)
+    }
+
+    /** "Convertir en el celular": se acepta el plan ofrecido y se manda la versión convertida. */
+    fun convertAndCast() {
+        val plan = offeredPlan ?: return
+        val at = castStartPosition()
+        convertPlan = plan
+        _ui.update { it.copy(castBlocked = null, convertOffer = null, castMessage = null) }
+        sendToCast(at)
+    }
+
+    /** Dónde arrancar en el aparato: donde va él si ya suena, o donde va el celular. */
+    private fun castStartPosition(): Long = if (remoteLoaded) remotePos() else player.currentPosition
+
+    private fun stopTranscoder() {
+        convertWatch?.cancel()
+        convertWatch = null
+        transcoder?.stop()
+        transcoder = null
+        convertPath?.let { app.streamServer.unregister(it) }
+        convertPath = null
+    }
+
+    /** Se deja de convertir (cambio de aparato, "intentar igual", desconexión o cierre). */
+    private fun dropConversion() {
+        convertSeekJob?.cancel()
+        pendingSeekMs = null
+        stopTranscoder()
+        convertPlan = null
+        offeredPlan = null
+        convertBaseMs = 0
+        _ui.update { it.copy(converting = null) }
+    }
+
+    private fun videoFacts(tracks: Tracks): VideoFacts? {
+        val group = tracks.groups.firstOrNull { it.type == C.TRACK_TYPE_VIDEO } ?: return null
+        val f = group.getTrackFormat((0 until group.length).firstOrNull { group.isTrackSelected(it) } ?: 0)
+        return VideoFacts(f.sampleMimeType, f.width, f.height, f.codecs, f.frameRate)
+    }
+
+    /** Qué habría que convertir para el aparato actual, o null si no hay arreglo (o nada que hacer). */
+    private fun buildConvertPlan(toTv: Boolean): ConvertPlan? {
+        val tracks = lastTracks ?: return null
+        val formats = ArrayList<Format>()
+        var selected: Int? = null
+        for (group in tracks.groups) {
+            if (group.type != C.TRACK_TYPE_AUDIO) continue
+            for (i in 0 until group.length) {
+                if (group.isTrackSelected(i)) selected = formats.size
+                formats += group.getTrackFormat(i)
+            }
+        }
+        val default = formats.indexOfFirst { it.selectionFlags and C.SELECTION_FLAG_DEFAULT != 0 }.coerceAtLeast(0)
+        val picks = formats.mapIndexed { i, f ->
+            AudioPick(
+                index = i,
+                mime = f.sampleMimeType,
+                language = f.language?.let { code -> languageName(code, code) },
+                isDeviceDefault = i == default,
+            )
+        }
+        val video = videoFacts(tracks)
+        return if (toTv) planForTv(video, picks, selected, tvProfile()) else planForCast(video, picks, selected, castProfile())
+    }
+
+    /** El plan en palabras, con lo que cuesta y un aviso si puede faltar espacio. */
+    private fun offerFor(plan: ConvertPlan, startAtMs: Long): ConvertOffer {
+        val device = app.selectedDevice.value?.name ?: "el televisor"
+        val total = stream?.length ?: request.videoSize ?: 0L
+        val duration = knownDurationMs()
+        val remaining = if (duration > 0) (total * (1.0 - startAtMs.toDouble() / duration)).toLong() else total
+        val free = runCatching { File(app.cacheDir.absolutePath).usableSpace }.getOrDefault(Long.MAX_VALUE)
+        val space = if (remaining > 0 && free < remaining + 300L * 1024 * 1024) {
+            " Ojo: quedan ${formatBytes(free)} libres y la conversión puede necesitar unos ${formatBytes(remaining)}."
+        } else {
+            ""
+        }
+        return ConvertOffer(what = plan.describe(device), cost = plan.cost() + space)
+    }
+
+    /**
+     * Lanza FFmpeg desde [startAtMs] y espera a que haya algo convertido. Devuelve la ruta en el
+     * servidor local, o null si falló (y deja el aviso en pantalla).
+     */
+    private suspend fun startConversion(plan: ConvertPlan, input: String, startAtMs: Long): String? {
+        stopTranscoder()
+        convertBaseMs = startAtMs
+        _ui.update {
+            it.copy(
+                cast = it.cast?.copy(state = "Preparando la conversión…"),
+                converting = "Convirtiendo en el celular: ${plan.statusLabel()}",
+            )
+        }
+        val t = Transcoder(app, plan)
+        transcoder = t
+        withContext(Dispatchers.IO) { t.start(input, startAtMs) }
+
+        // El aparato no espera mucho por los primeros datos: se le avisa cuando ya hay algo.
+        var waited = 0L
+        while (t.outputBytes() < FIRST_BYTES && !t.progress.value.finished && waited < 120_000) {
+            delay(300)
+            waited += 300
+        }
+        val state = t.progress.value
+        if (t.outputBytes() < MIN_BYTES || state.error != null) {
+            val why = state.error ?: if (waited >= 120_000) "tardó demasiado en empezar (pocas fuentes en el torrent)" else "no generó vídeo"
+            stopTranscoder()
+            convertPlan = null
+            _ui.update {
+                it.copy(
+                    converting = null,
+                    cast = it.cast?.copy(state = "No se pudo convertir"),
+                    castBlocked = "No se pudo convertir en el celular: $why.",
+                    convertOffer = null,
+                )
+            }
+            return null
+        }
+
+        convertWatch = scope.launch {
+            t.progress.collect { p ->
+                if (p.error != null) {
+                    _ui.update { it.copy(converting = null, castMessage = "La conversión se detuvo: ${p.error}. Prueba otro stream.") }
+                } else {
+                    val speed = if (p.speed > 0 && !p.finished) " · %.1fx".format(p.speed) else ""
+                    val label = if (p.finished) "Conversión terminada" else "Convirtiendo en el celular"
+                    _ui.update { it.copy(converting = "$label: ${plan.statusLabel()}$speed") }
+                }
+            }
+        }
+        val path = app.streamServer.register(t.source, "convertido.${plan.container.extension}")
+        convertPath = path
+        return path
     }
 
     private fun castProfile() = app.compat.castProfile(app.selectedDevice.value as? TargetDevice.Chromecast)
@@ -928,11 +1116,7 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
     private suspend fun remoteCompatReport(toTv: Boolean): CompatReport? {
         if (!tracksKnown.isCompleted) withTimeoutOrNull(20_000) { tracksKnown.await() }
         val tracks = lastTracks ?: return null
-        val videoGroup = tracks.groups.firstOrNull { it.type == C.TRACK_TYPE_VIDEO }
-        val video = videoGroup?.let { g ->
-            g.getTrackFormat((0 until g.length).firstOrNull { g.isTrackSelected(it) } ?: 0)
-        }
-        val facts = video?.let { VideoFacts(it.sampleMimeType, it.width, it.height, it.codecs, it.frameRate) }
+        val facts = videoFacts(tracks)
         val audio = remoteAudioFormat(tracks)?.sampleMimeType
         return if (toTv) checkTvCompat(facts, audio, tvProfile()) else checkCastCompat(facts, audio, castProfile())
     }
@@ -951,6 +1135,21 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
                 "${device.name} debería reproducir. Revisa el volumen del TV o prueba otro stream."
             else -> {
                 app.compat.markMuted(device.key, codec)
+                // Ya anotado: se ofrece convertir este mismo vídeo para no tener que cambiar de stream.
+                val plan = if (convertPlan == null) buildConvertPlan(toTv = remote === dlna) else null
+                if (plan != null) {
+                    offeredPlan = plan
+                    _ui.update {
+                        it.copy(
+                            castMessage = null,
+                            castBlocked = "Anotado: en ${device.name} el audio ${codec.label} suena mudo. " +
+                                "Desde ahora esos streams salen en rojo para este aparato.",
+                            convertOffer = offerFor(plan, remotePos()),
+                            noSoundReported = true,
+                        )
+                    }
+                    return
+                }
                 "Anotado: en ${device.name} el audio ${codec.label} suena mudo. Desde ahora esos streams " +
                     "salen en rojo para este aparato. Elige otro stream con otro audio."
             }
@@ -960,16 +1159,18 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
 
     private fun sendToCast(startAtMs: Long, force: Boolean = false) {
         castJob?.cancel()
+        convertSeekJob?.cancel()
         castJob = scope.launch {
             val target = remote ?: return@launch
+            val toTv = target === dlna
             val server = app.streamServer
             val host = withContext(Dispatchers.IO) {
                 server.start()
                 lanAddress()
             }
             val videoPath = path
-            val url = if (videoPath != null) host?.let { server.lanUrl(videoPath, it) } else request.url
-            if (url == null) {
+            val directUrl = if (videoPath != null) host?.let { server.lanUrl(videoPath, it) } else request.url
+            if (directUrl == null || (convertPlan != null && host == null)) {
                 _ui.update {
                     it.copy(castMessage = "Para transmitir, el celular y el televisor deben estar en la misma red Wi-Fi.")
                 }
@@ -978,61 +1179,96 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
 
             // Se revisa el archivo real (vídeo y audio) contra el aparato antes de mandarlo.
             var warning: String? = null
-            if (!force) {
+            if (convertPlan == null && !force) {
                 _ui.update { it.copy(cast = it.cast?.copy(state = "Revisando el formato…")) }
-                val report = remoteCompatReport(toTv = target === dlna)
+                val report = remoteCompatReport(toTv)
                 if (report != null && report.blocking.isNotEmpty()) {
-                    _ui.update {
-                        it.copy(castBlocked = report.blocking.joinToString("\n"), cast = it.cast?.copy(state = "No compatible"))
+                    val plan = buildConvertPlan(toTv)
+                    if (plan != null && request.autoConvert) {
+                        // Venías convirtiendo el episodio anterior: este sigue igual, sin preguntar.
+                        convertPlan = plan
+                    } else {
+                        offeredPlan = plan
+                        _ui.update {
+                            it.copy(
+                                castBlocked = report.blocking.joinToString("\n"),
+                                convertOffer = plan?.let { p -> offerFor(p, startAtMs) },
+                                cast = it.cast?.copy(state = "No compatible"),
+                            )
+                        }
+                        return@launch
                     }
-                    return@launch
+                } else {
+                    warning = report?.warnings?.joinToString("\n")?.takeIf { it.isNotEmpty() }
+                    val ok = report != null && warning == null
+                    val name = app.selectedDevice.value?.name ?: "el televisor"
+                    _ui.update { it.copy(compatOk = if (ok) "Formato revisado: vídeo y audio compatibles con $name" else null) }
                 }
-                warning = report?.warnings?.joinToString("\n")?.takeIf { it.isNotEmpty() }
-                val ok = report != null && warning == null
-                val name = app.selectedDevice.value?.name ?: "el televisor"
-                _ui.update { it.copy(compatOk = if (ok) "Formato revisado: vídeo y audio compatibles con $name" else null) }
             } else {
                 _ui.update { it.copy(compatOk = null) }
             }
-            _ui.update { it.copy(castBlocked = null, noSoundReported = false) }
+            _ui.update { it.copy(castBlocked = null, convertOffer = null, noSoundReported = false) }
 
-            val media = if (target === dlna) {
+            // El celular deja de leer el torrent para no competir con el televisor (o con FFmpeg).
+            knownDurationMs()
+            player.pause()
+            player.stop()
+
+            // Con conversión, al aparato le llega la versión convertida, que empieza en startAtMs.
+            val plan = convertPlan
+            var url = directUrl
+            var sourcePath = videoPath
+            if (plan != null) {
+                val input = videoPath?.let { server.localUrl(it) } ?: directUrl
+                val livePath = startConversion(plan, input, startAtMs) ?: return@launch
+                url = server.lanUrl(livePath, host!!)
+                sourcePath = livePath
+            } else {
+                stopTranscoder()
+                convertBaseMs = 0
+                _ui.update { it.copy(converting = null) }
+            }
+            pendingSeekMs = null
+            val live = plan != null
+            val duration = knownDurationMs().let { if (live) (it - startAtMs).coerceAtLeast(0) else it }
+
+            val media = if (toTv) {
                 val srt = if (host != null) dlnaSubtitleUrl(host) else null
                 // Los Samsung también leen el subtítulo de esta cabecera de la respuesta del vídeo.
-                videoPath?.let { server.setHeaders(it, if (srt != null) mapOf("CaptionInfo.sec" to srt) else emptyMap()) }
-                val name = stream?.fileName ?: request.filename ?: url.substringBefore('?')
+                sourcePath?.let { server.setHeaders(it, if (srt != null) mapOf("CaptionInfo.sec" to srt) else emptyMap()) }
+                val name = stream?.fileName ?: request.filename ?: directUrl.substringBefore('?')
                 CastMedia(
                     url = url,
-                    contentType = castContentType(),
+                    contentType = plan?.container?.castMime ?: castContentType(),
                     title = request.title,
-                    startAtMs = startAtMs,
+                    startAtMs = if (live) 0 else startAtMs,
                     subtitleTracks = emptyList(),
                     activeSubtitleId = null,
                     subtitleLang = currentExternalLang(),
                     subtitleScale = 1f,
-                    videoMime = dlnaMime(name, dlna.device?.isSamsung == true),
+                    videoMime = plan?.container?.dlnaMime ?: dlnaMime(name, dlna.device?.isSamsung == true),
                     srtUrl = srt,
-                    durationMs = knownDurationMs(),
+                    durationMs = duration,
+                    live = live,
                 )
             } else {
                 val (tracks, activeTrack) = if (host != null) castSubtitleTracks(host) else noTracks()
                 CastMedia(
                     url = url,
-                    contentType = castContentType(),
+                    contentType = plan?.container?.castMime ?: castContentType(),
                     title = request.title,
-                    startAtMs = startAtMs,
+                    startAtMs = if (live) 0 else startAtMs,
                     subtitleTracks = tracks,
                     activeSubtitleId = activeTrack,
                     subtitleLang = currentExternalLang(),
                     subtitleScale = CAST_SCALE[_ui.value.subtitleSize.coerceIn(0, 2)],
+                    durationMs = duration,
+                    live = live,
                 )
             }
 
-            // El celular deja de leer el torrent para no competir con el televisor.
-            player.pause()
-            player.stop()
-
             target.load(media)
+            remoteLoaded = true
             val embeddedNote = if (target === cast && media.subtitleTracks.isEmpty() && _ui.value.textTracks.any { it.selected }) {
                 "Los subtítulos internos del archivo no se pueden transmitir. Elige uno externo en \"Audio y subtítulos\"."
             } else {
@@ -1045,8 +1281,12 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
     }
 
     /** La duración que leyó el reproductor del celular (0 si aún no la sabe). */
-    private fun knownDurationMs(): Long =
-        player.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: savedEntry?.durationMs ?: 0L
+    private fun knownDurationMs(): Long {
+        // Se recuerda: al detener el reproductor del celular la duración deja de estar disponible.
+        player.duration.takeIf { it != C.TIME_UNSET && it > 0 }?.let { lastKnownDuration = it }
+        if (lastKnownDuration <= 0) lastKnownDuration = savedEntry?.durationMs ?: 0L
+        return lastKnownDuration
+    }
 
     /** El subtítulo elegido en SRT, para televisores DLNA (Samsung). */
     private fun dlnaSubtitleUrl(host: String): String? {
@@ -1054,8 +1294,10 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
         val list = cues
         if (_ui.value.externalSelected == null || list.isEmpty()) return null
         val offset = _ui.value.subtitleOffsetMs
+        val shift = convertShift()
         val p = app.streamServer.register(
-            LazySource("text/srt; charset=utf-8") { toSrt(list, offset).toByteArray(Charsets.UTF_8) },
+            // Convertido: el TV cuenta desde donde empezó la conversión, así que el subtítulo se corre.
+            LazySource("text/srt; charset=utf-8") { toSrt(list, offset - shift).toByteArray(Charsets.UTF_8) },
             "subtitulos.srt",
         )
         castSubtitlePaths = listOf(p)
@@ -1074,6 +1316,7 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
         val list = cues
         if (_ui.value.externalSelected == null || list.isEmpty()) return noTracks()
         val base = _ui.value.subtitleOffsetMs
+        val shift = convertShift()
         val tracks = mutableListOf<CastSubtitleTrack>()
         val paths = mutableListOf<String>()
         val offsets = HashMap<Long, Long>()
@@ -1081,7 +1324,7 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
             val offset = base + step * OFFSET_STEP_MS
             val id = FIRST_TRACK_ID + step + OFFSET_STEPS
             val p = app.streamServer.register(
-                LazySource("text/vtt; charset=utf-8") { toWebVtt(list, offset).toByteArray(Charsets.UTF_8) },
+                LazySource("text/vtt; charset=utf-8") { toWebVtt(list, offset - shift).toByteArray(Charsets.UTF_8) },
                 "subtitulos.vtt",
             )
             paths += p
@@ -1188,11 +1431,13 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
         isOpen = false
         countdownJob?.cancel()
         waitJob?.cancel()
+        convertSeekJob?.cancel()
         pushSync(force = true)
         remote?.stopMedia()
         cast.release()
         dlna.release()
         player.release()
+        stopTranscoder()
         path?.let { app.streamServer.unregister(it) }
         clearCastSubtitles()
         stream?.let { app.torrents.close(it) }
@@ -1202,6 +1447,10 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
 
     companion object {
         private const val HASH_TIMEOUT_MS = 60_000L
+
+        /** Lo convertido que se espera antes de avisarle al aparato (y el mínimo para no rendirse). */
+        private const val FIRST_BYTES = 1_500_000L
+        private const val MIN_BYTES = 64_000L
         private val CAST_SCALE = floatArrayOf(0.8f, 1f, 1.3f)
         private const val OFFSET_STEPS = 20
         private const val OFFSET_STEP_MS = 500L

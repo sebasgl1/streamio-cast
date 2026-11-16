@@ -156,6 +156,8 @@ class StremioApp : Application() {
         super.onCreate()
         CrashReporter.install(this)
         repo = AddonRepository(this)
+        // Restos de una conversión que quedó a medias (la app se cerró): se borran.
+        Thread { com.sebasgl1.streamiocast.transcode.cleanUpConversions(this) }.start()
         // Si el Chromecast ya estaba conectado (desde otra app o una sesión anterior), se nota de una.
         castContext?.sessionManager?.let { manager ->
             manager.addSessionManagerListener(castWatcher, CastSession::class.java)

@@ -21,6 +21,8 @@ data class PlaybackRequest(
     val bingeGroup: String? = null,
     /** Lo abrió el paso automático al siguiente episodio (no espera a que le des reproducir). */
     val autoNext: Boolean = false,
+    /** El episodio anterior se estaba convirtiendo en el celular: este sigue igual, sin preguntar. */
+    val autoConvert: Boolean = false,
 ) {
     val title: String
         get() = target.displayTitle
@@ -106,7 +108,14 @@ data class PlayerUi(
     val compatOk: String? = null,
     /** Ya se tocó "No tiene sonido" para este vídeo. */
     val noSoundReported: Boolean = false,
+    /** Se puede arreglar convirtiendo en el celular: qué se haría y qué cuesta. */
+    val convertOffer: ConvertOffer? = null,
+    /** Texto de estado mientras se convierte ("Convirtiendo en el celular: audio DTS → AC3 · 2.1x"). */
+    val converting: String? = null,
 )
+
+/** La propuesta de conversión, en palabras para la persona. */
+data class ConvertOffer(val what: String, val cost: String)
 
 /** Espera antes de reproducir: cuánto vídeo hay descargado por delante y cuánto falta. */
 data class StartWait(

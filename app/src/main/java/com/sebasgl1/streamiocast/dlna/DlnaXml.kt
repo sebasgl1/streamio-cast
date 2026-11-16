@@ -100,11 +100,21 @@ fun soapEnvelope(action: String, args: List<Pair<String, String>>): String = bui
 
 private const val DLNA_FLAGS = "DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000"
 
+/** Vídeo convertido en vivo: no se puede saltar por bytes (OP=00) y está convertido (CI=1). */
+private const val DLNA_LIVE_FLAGS = "DLNA.ORG_OP=00;DLNA.ORG_CI=1;DLNA.ORG_FLAGS=01700000000000000000000000000000"
+
 /**
  * Metadatos DIDL-Lite del vídeo. Para televisores Samsung incluye los subtítulos (SRT) con sus
  * etiquetas propias ("sec:CaptionInfoEx"), que es como los muestra su reproductor.
  */
-fun didlLite(title: String, url: String, mime: String, subtitleUrl: String?): String = buildString {
+fun didlLite(
+    title: String,
+    url: String,
+    mime: String,
+    subtitleUrl: String?,
+    live: Boolean = false,
+    durationMs: Long = 0,
+): String = buildString {
     append("""<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" """)
     append("""xmlns:dc="http://purl.org/dc/elements/1.1/" """)
     append("""xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" """)
@@ -112,7 +122,11 @@ fun didlLite(title: String, url: String, mime: String, subtitleUrl: String?): St
     append("""<item id="0" parentID="-1" restricted="1">""")
     append("<dc:title>").append(xmlEscape(title)).append("</dc:title>")
     append("<upnp:class>object.item.videoItem.movie</upnp:class>")
-    append("<res protocolInfo=\"http-get:*:").append(mime).append(':').append(DLNA_FLAGS).append("\">")
+    append("<res protocolInfo=\"http-get:*:").append(mime).append(':')
+        .append(if (live) DLNA_LIVE_FLAGS else DLNA_FLAGS).append('"')
+    // En vivo el TV no puede medir la duración: se la decimos nosotros.
+    if (live && durationMs > 0) append(" duration=\"").append(formatDlnaTime(durationMs)).append(".000\"")
+    append(">")
     append(xmlEscape(url)).append("</res>")
     if (subtitleUrl != null) {
         val sub = xmlEscape(subtitleUrl)
@@ -137,6 +151,11 @@ fun dlnaMime(fileName: String, samsung: Boolean): String = when (fileName.substr
 val DLNA_VIDEO_HEADERS = mapOf(
     "transferMode.dlna.org" to "Streaming",
     "contentFeatures.dlna.org" to DLNA_FLAGS,
+)
+
+val DLNA_LIVE_HEADERS = mapOf(
+    "transferMode.dlna.org" to "Streaming",
+    "contentFeatures.dlna.org" to DLNA_LIVE_FLAGS,
 )
 
 fun formatDlnaTime(ms: Long): String {

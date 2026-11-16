@@ -174,7 +174,8 @@ internal fun checkAudio(
     return when {
         bad.isNotEmpty() && good.isEmpty() && bad.size == audio.size -> AudioCheck(
             Verdict.BAD,
-            "Audio ${names(bad)}: en $device suena mudo.",
+            "Audio ${names(bad)}: en $device suena mudo. Se puede convertir en el celular al reproducirlo " +
+                "(gasta más batería).",
         )
         bad.isNotEmpty() -> AudioCheck(
             Verdict.MAYBE,
