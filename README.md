@@ -19,6 +19,7 @@ Código desde cero: Kotlin, Jetpack Compose (Material 3), OkHttp y Coil.
 | 6 | Televisores DLNA (Samsung), revisión del formato real antes de transmitir, sincronización con la cuenta de Stremio | ✅ escrita |
 | 7 | Arranque con buffer (automático, esperar N s o manual) y re-buffer; etiquetas Chromecast/TV por stream con filtro | ✅ escrita |
 | 8 | Transmitir desde cualquier pantalla (lista filtrada para tu aparato), perfiles por marca y año, revisión del audio real y botón "No tiene sonido" | ✅ escrita |
+| 9 | Conversión en el celular (FFmpeg): audio a AC3/AAC y vídeo a H.264 cuando el aparato no los reproduce, con aviso de qué se hará | ✅ escrita |
 
 ## Compilar
 

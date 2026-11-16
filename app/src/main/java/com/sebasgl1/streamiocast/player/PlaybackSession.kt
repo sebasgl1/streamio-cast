@@ -47,6 +47,7 @@ import com.sebasgl1.streamiocast.torrent.formatBytes
 import com.sebasgl1.streamiocast.transcode.AudioPick
 import com.sebasgl1.streamiocast.transcode.ConvertPlan
 import com.sebasgl1.streamiocast.transcode.Transcoder
+import com.sebasgl1.streamiocast.transcode.VideoTarget
 import com.sebasgl1.streamiocast.transcode.planForCast
 import com.sebasgl1.streamiocast.transcode.planForTv
 import java.io.File
@@ -1066,6 +1067,12 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
             waited += 300
         }
         val state = t.progress.value
+        if ((t.outputBytes() < MIN_BYTES || state.error != null) && plan.video == VideoTarget.H264 && !plan.softwareVideo) {
+            // El chip del celular no pudo con este vídeo: se intenta con el procesador (más lento).
+            val software = plan.copy(softwareVideo = true)
+            convertPlan = software
+            return startConversion(software, input, startAtMs)
+        }
         if (t.outputBytes() < MIN_BYTES || state.error != null) {
             val why = state.error ?: if (waited >= 120_000) "tardó demasiado en empezar (pocas fuentes en el torrent)" else "no generó vídeo"
             stopTranscoder()

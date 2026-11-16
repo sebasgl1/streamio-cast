@@ -13,7 +13,6 @@ import com.sebasgl1.streamiocast.transcode.planForCast
 import com.sebasgl1.streamiocast.transcode.planForTv
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -81,11 +80,15 @@ class ConvertPlanTest {
         assertEquals(VideoTarget.H264, plan.video)
         assertEquals(1080, plan.scaleToHeight)
         assertEquals(AudioTarget.AAC, plan.audio)
-        assertEquals(LiveContainer.MATROSKA, plan.container)
-        val args = plan.ffmpegArgs("in", "out.mkv", 0)
-        assertTrue(args.containsAll(listOf("-c:v", "h264_mediacodec", "-c:a", "aac", "-f", "matroska")))
+        assertEquals(LiveContainer.FMP4, plan.container)
+        val args = plan.ffmpegArgs("in", "out.mp4", 0)
+        assertTrue(args.containsAll(listOf("-c:v", "h264_mediacodec", "-c:a", "aac", "-f", "mp4")))
+        assertTrue(args[args.indexOf("-movflags") + 1].contains("delay_moov"))
         assertTrue(args[args.indexOf("-vf") + 1].startsWith("scale=-2:1080"))
         assertTrue(plan.describe("tu Chromecast").contains("puede ir a saltos"))
+        // Respaldo si el chip del celular falla: codificador por software.
+        val soft = plan.copy(softwareVideo = true).ffmpegArgs("in", "out.mp4", 0)
+        assertTrue(soft.containsAll(listOf("-c:v", "libx264", "-preset", "ultrafast")))
     }
 
     @Test
@@ -99,10 +102,17 @@ class ConvertPlanTest {
     }
 
     @Test
-    fun av1CannotBeConverted() {
-        val av1 = VideoFacts("video/av01", 1920, 1080, null, 24f)
-        assertNull(planForCast(av1, listOf(AudioPick(0, "audio/mp4a-latm", null, true)), 0, CastProfile.GEN2))
-        assertNull(planForTv(av1, listOf(dts()), 0, samsung2018))
-        assertNotNull(planForTv(av1, listOf(dts()), 0, tvProfileFor("Samsung", "UN50TU8000", "")))
+    fun av1IsConvertedOnlyWhereItIsNotSupported() {
+        val av1 = VideoFacts("video/av01", 3840, 2160, null, 24f)
+        val aac = listOf(AudioPick(0, "audio/mp4a-latm", null, true))
+        assertEquals(VideoTarget.H264, planForCast(av1, aac, 0, CastProfile.GEN2)!!.video)
+        // Samsung 2018 no lee AV1: vídeo a H.264 1080p y, de paso, el DTS a AC3.
+        val old = planForTv(av1, listOf(dts()), 0, samsung2018)!!
+        assertEquals(VideoTarget.H264, old.video)
+        assertEquals(1080, old.scaleToHeight)
+        assertEquals(AudioTarget.AC3, old.audio)
+        // Samsung 2020 sí lee AV1: solo el audio.
+        assertEquals(VideoTarget.COPY, planForTv(av1, listOf(dts()), 0, tvProfileFor("Samsung", "UN50TU8000", ""))!!.video)
+        assertNull(planForTv(av1, aac, 0, tvProfileFor("Samsung", "UN50TU8000", "")))
     }
 }

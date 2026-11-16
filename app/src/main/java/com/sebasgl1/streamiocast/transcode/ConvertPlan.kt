@@ -29,8 +29,12 @@ enum class LiveContainer(val ffmpegFormat: String, val extension: String, val ca
     /** Lo que mejor aceptan los televisores para vídeo que se va generando. */
     MPEGTS("mpegts", "ts", "video/mp2t", "video/mpeg"),
 
-    /** Lo que ya reproduce el receptor del Chromecast. */
-    MATROSKA("matroska", "mkv", "video/mp4", "video/x-matroska"),
+    /**
+     * MP4 fragmentado, lo más estándar para el Chromecast. Con "delay_moov" la cabecera se escribe
+     * al llegar el primer trozo de vídeo: el codificador por hardware entrega sus datos de
+     * configuración dentro del propio vídeo y así quedan bien puestos.
+     */
+    FMP4("mp4", "mp4", "video/mp4", "video/mp4"),
 }
 
 /** La pista de audio que se va a mandar: su posición entre las pistas de audio del archivo. */
@@ -54,6 +58,8 @@ data class ConvertPlan(
     /** Alto de salida si se reduce (por ejemplo 1080), o null para dejarlo igual. */
     val scaleToHeight: Int?,
     val container: LiveContainer,
+    /** Codificar el vídeo con el procesador (libx264) en vez del chip: respaldo, más lento. */
+    val softwareVideo: Boolean = false,
 ) {
     /** Lo que la app le dice a la persona antes de hacerlo. */
     fun describe(device: String): String = buildList {
@@ -69,7 +75,7 @@ data class ConvertPlan(
             VideoTarget.H264 -> add(
                 "Convierto el vídeo de $videoFrom a H.264" +
                     (scaleToHeight?.let { " ${it}p" } ?: "") +
-                    " con el chip del celular: baja la calidad, puede ir a saltos y el HDR se ve con colores lavados.",
+                    " en el celular: baja la calidad, puede ir a saltos y el HDR se ve con colores lavados.",
             )
         }
     }.joinToString(" ")
@@ -91,7 +97,11 @@ data class ConvertPlan(
             audio == AudioTarget.COPY -> null
             else -> "audio $audioFrom → ${audio.label}"
         },
-        if (video == VideoTarget.H264) "vídeo $videoFrom → H.264" + (scaleToHeight?.let { " ${it}p" } ?: "") else null,
+        if (video == VideoTarget.H264) {
+            "vídeo $videoFrom → H.264" + (scaleToHeight?.let { " ${it}p" } ?: "") + if (softwareVideo) " (procesador)" else ""
+        } else {
+            null
+        },
     ).joinToString(" y ").ifEmpty { "sin cambios" }
 
     /** La orden de FFmpeg. [startMs]: desde dónde empezar (al adelantar se vuelve a lanzar). */
@@ -106,10 +116,17 @@ data class ConvertPlan(
         when (video) {
             VideoTarget.COPY -> addAll(listOf("-c:v", "copy"))
             VideoTarget.H264 -> {
-                val filters = listOfNotNull(scaleToHeight?.let { "scale=-2:$it:flags=fast_bilinear" }, "format=nv12")
-                addAll(listOf("-vf", filters.joinToString(",")))
-                // Codificador por hardware del celular (MediaCodec).
-                addAll(listOf("-c:v", "h264_mediacodec", "-b:v", "8M", "-g", "48"))
+                val scale = scaleToHeight?.let { "scale=-2:$it:flags=fast_bilinear" }
+                if (softwareVideo) {
+                    // Respaldo: codificador por software, en su modo más rápido.
+                    addAll(listOf("-vf", listOfNotNull(scale, "format=yuv420p").joinToString(",")))
+                    addAll(listOf("-c:v", "libx264", "-preset", "ultrafast", "-crf", "23"))
+                    addAll(listOf("-maxrate", "8M", "-bufsize", "16M", "-g", "48"))
+                } else {
+                    // Codificador por hardware del celular (MediaCodec).
+                    addAll(listOf("-vf", listOfNotNull(scale, "format=nv12").joinToString(",")))
+                    addAll(listOf("-c:v", "h264_mediacodec", "-b:v", "8M", "-g", "48"))
+                }
             }
         }
         when (audio) {
@@ -118,7 +135,9 @@ data class ConvertPlan(
             AudioTarget.AAC -> addAll(listOf("-c:a", "aac", "-b:a", "192k", "-ac", "2"))
         }
         addAll(listOf("-max_muxing_queue_size", "4096"))
-        if (container == LiveContainer.MATROSKA) addAll(listOf("-cluster_time_limit", "1000"))
+        if (container == LiveContainer.FMP4) {
+            addAll(listOf("-movflags", "+frag_keyframe+delay_moov+default_base_moof"))
+        }
         addAll(listOf("-f", container.ffmpegFormat, output))
     }
 }
@@ -142,9 +161,6 @@ private fun videoLabel(video: VideoFacts?): String {
     return codec + res
 }
 
-/** FFmpeg (sin librerías externas) no decodifica AV1 por software: eso no se puede convertir. */
-private fun canDecode(video: VideoFacts?): Boolean = video?.mime != "video/av01"
-
 /** Perfiles H.264 de 10 bits o más: profile_idc 110, 122, 244. */
 private fun isHighBitH264(video: VideoFacts): Boolean {
     val profile = video.codecs
@@ -164,8 +180,8 @@ private fun choosePick(tracks: List<AudioPick>, preferred: Int?): AudioPick? =
         ?: tracks.firstOrNull()
 
 /**
- * Plan para un televisor DLNA. El vídeo no se toca (los TV decodifican casi todo). Devuelve null
- * si no hay nada que convertir o si el problema no tiene arreglo (vídeo AV1 en un TV que no lo lee).
+ * Plan para un televisor DLNA. El vídeo casi nunca se toca (los TV decodifican casi todo); solo
+ * el AV1 en un TV que no lo lee se pasa a H.264. Devuelve null si no hay nada que convertir.
  */
 fun planForTv(
     video: VideoFacts?,
@@ -173,33 +189,35 @@ fun planForTv(
     preferredAudio: Int?,
     profile: TvProfile,
 ): ConvertPlan? {
-    if (video?.mime == "video/av01" && profile.av1 == Support.NO) return null
+    val needsVideo = video?.mime == "video/av01" && profile.av1 == Support.NO
     val playable = profile.playableAudio()
-    val pick = choosePick(tracks, preferredAudio) ?: return null
-    val codec = audioCodecOfMime(pick.mime)
+    val pick = choosePick(tracks, preferredAudio)
+    val codec = audioCodecOfMime(pick?.mime)
     val target = when {
+        pick == null -> AudioTarget.COPY
         codec != null && codec in playable -> AudioTarget.COPY
         AudioCodec.AC3 in playable -> AudioTarget.AC3
         else -> AudioTarget.AAC
     }
-    // Nada que hacer: la pista que el TV usa por su cuenta ya le sirve.
-    if (target == AudioTarget.COPY && pick.isDeviceDefault) return null
+    // Nada que hacer: la pista que el TV usa por su cuenta ya le sirve y el vídeo también.
+    val audioChanges = pick != null && (target != AudioTarget.COPY || !pick.isDeviceDefault)
+    if (!needsVideo && !audioChanges) return null
     return ConvertPlan(
         audio = target,
-        audioIndex = pick.index,
-        audioFrom = audioLabel(pick.mime),
-        audioLanguage = pick.language,
-        audioIsOtherTrack = !pick.isDeviceDefault,
-        video = VideoTarget.COPY,
+        audioIndex = pick?.index ?: 0,
+        audioFrom = audioLabel(pick?.mime),
+        audioLanguage = pick?.language,
+        audioIsOtherTrack = pick != null && !pick.isDeviceDefault,
+        video = if (needsVideo) VideoTarget.H264 else VideoTarget.COPY,
         videoFrom = videoLabel(video),
-        scaleToHeight = null,
+        scaleToHeight = if (needsVideo && video != null && video.height > 1080) 1080 else null,
         container = LiveContainer.MPEGTS,
     )
 }
 
 /**
  * Plan para un Chromecast. El de 2ª gen solo lee H.264 de 8 bits hasta 1080p con audio AAC/MP3:
- * lo demás se convierte. Devuelve null si no hay nada que convertir o no se puede (AV1).
+ * lo demás se convierte. Devuelve null si no hay nada que convertir.
  */
 fun planForCast(
     video: VideoFacts?,
@@ -219,7 +237,6 @@ fun planForCast(
             video.width > maxWidth || video.height > maxHeight ||
             (!profile.advanced && isHighBitH264(video))
         )
-    if (needsVideo && !canDecode(video)) return null
 
     val playable = profile.playableAudio()
     val pick = choosePick(tracks, preferredAudio)
@@ -242,6 +259,6 @@ fun planForCast(
         video = if (needsVideo) VideoTarget.H264 else VideoTarget.COPY,
         videoFrom = videoLabel(video),
         scaleToHeight = if (needsVideo && video != null && video.height > limit) limit else null,
-        container = LiveContainer.MATROSKA,
+        container = LiveContainer.FMP4,
     )
 }
