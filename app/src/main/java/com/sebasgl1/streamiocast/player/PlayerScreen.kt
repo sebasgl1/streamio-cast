@@ -658,7 +658,15 @@ private fun CastPanel(ui: PlayerUi, cast: CastUi, vm: PlaybackSession, modifier:
             textAlign = TextAlign.Center,
         )
         Text(cast.state, color = Color.White.copy(alpha = 0.75f))
-        // La revisión del vídeo real encontró algo que tu Chromecast no reproduce.
+        ui.compatOk?.let { ok ->
+            Text(
+                text = "✓ $ok",
+                color = Color(0xFF7BD88F),
+                style = MaterialTheme.typography.bodySmall,
+                textAlign = TextAlign.Center,
+            )
+        }
+        // La revisión del archivo real encontró algo que este aparato no reproduce.
         ui.castBlocked?.let { reason ->
             Text(
                 text = reason,
@@ -667,7 +675,7 @@ private fun CastPanel(ui: PlayerUi, cast: CastUi, vm: PlaybackSession, modifier:
                 textAlign = TextAlign.Center,
             )
             Text(
-                text = "Elige un stream marcado como Compatible, o intenta igual.",
+                text = "Elige otro stream marcado en verde para ${cast.device}, o intenta igual.",
                 color = Color.White.copy(alpha = 0.7f),
                 style = MaterialTheme.typography.bodySmall,
                 textAlign = TextAlign.Center,
@@ -708,6 +716,10 @@ private fun CastPanel(ui: PlayerUi, cast: CastUi, vm: PlaybackSession, modifier:
             OutlinedButton(onClick = { vm.castSkip(-10_000) }) { Text("−10 s", color = Color.White) }
             Button(onClick = vm::castTogglePlay) { Text(if (cast.playing) "Pausar" else "Reproducir") }
             OutlinedButton(onClick = { vm.castSkip(30_000) }) { Text("+30 s", color = Color.White) }
+        }
+        // Si se ve pero no se oye: la app aprende que ese audio no suena en este aparato.
+        if (ui.castBlocked == null && !ui.noSoundReported) {
+            OutlinedButton(onClick = vm::reportNoSound) { Text("🔇 No tiene sonido", color = Color.White) }
         }
         TextButton(onClick = vm::stopCasting) {
             Text("Dejar de transmitir y seguir en el celular", color = Color.White)

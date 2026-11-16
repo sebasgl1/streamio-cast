@@ -80,7 +80,7 @@ fun TransmitButton(
 }
 
 @Composable
-private fun DevicePickerDialog(
+internal fun DevicePickerDialog(
     connectedTo: String?,
     onChromecast: () -> Unit,
     onDlna: (DlnaDevice) -> Unit,
@@ -130,11 +130,11 @@ private fun DevicePickerDialog(
             ) {
                 if (connectedTo != null) {
                     Text(
-                        text = "Transmitiendo a $connectedTo",
+                        text = "Conectado a $connectedTo",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.primary,
                     )
-                    TextButton(onClick = onStop) { Text("Dejar de transmitir y seguir en el celular") }
+                    TextButton(onClick = onStop) { Text("Desconectar") }
                 }
 
                 Section("Chromecast")
@@ -142,7 +142,7 @@ private fun DevicePickerDialog(
                     Hint(if (selector == null) "Google Cast no está disponible en este celular." else "Buscando…")
                 }
                 castRoutes.forEach { route ->
-                    DeviceRow(name = route.name, detail = route.description?.toString()) {
+                    DeviceRow(name = route.name, detail = route.description?.toString(), selected = route.name == connectedTo) {
                         onChromecast()
                         route.select()
                     }
@@ -150,7 +150,11 @@ private fun DevicePickerDialog(
 
                 Section("Televisores (DLNA)")
                 dlnaDevices.forEach { device ->
-                    DeviceRow(name = device.name, detail = listOf(device.manufacturer, device.model).filter { it.isNotBlank() }.joinToString(" · ")) {
+                    DeviceRow(
+                        name = device.name,
+                        detail = listOf(device.manufacturer, device.model).filter { it.isNotBlank() }.joinToString(" · "),
+                        selected = device.name == connectedTo,
+                    ) {
                         onDlna(device)
                     }
                 }
@@ -192,16 +196,25 @@ private fun Hint(text: String) {
 }
 
 @Composable
-private fun DeviceRow(name: String, detail: String?, onClick: () -> Unit) {
-    Column(
+private fun DeviceRow(name: String, detail: String?, selected: Boolean = false, onClick: () -> Unit) {
+    Row(
         Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
             .padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(name, style = MaterialTheme.typography.bodyLarge)
-        if (!detail.isNullOrBlank()) {
-            Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Column(Modifier.weight(1f)) {
+            Text(
+                name,
+                style = MaterialTheme.typography.bodyLarge,
+                color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            )
+            if (!detail.isNullOrBlank()) {
+                Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
+        if (selected) Text("✓", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
     }
 }

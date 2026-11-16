@@ -102,6 +102,10 @@ data class PlayerUi(
     val startWait: StartWait? = null,
     /** Segundos de buffer que se esperan si el vídeo se queda sin descargado (null = automático). */
     val rebufferSec: Int? = null,
+    /** La revisión del archivo real salió bien (texto para mostrar en verde). */
+    val compatOk: String? = null,
+    /** Ya se tocó "No tiene sonido" para este vídeo. */
+    val noSoundReported: Boolean = false,
 )
 
 /** Espera antes de reproducir: cuánto vídeo hay descargado por delante y cuánto falta. */

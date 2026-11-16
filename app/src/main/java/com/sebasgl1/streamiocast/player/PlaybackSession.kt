@@ -22,6 +22,11 @@ import com.sebasgl1.streamiocast.cast.lanAddress
 import com.sebasgl1.streamiocast.data.PlaybackPrefs
 import com.sebasgl1.streamiocast.data.ProgressInput
 import com.sebasgl1.streamiocast.data.StreamFilter
+import com.sebasgl1.streamiocast.data.AudioCodec
+import com.sebasgl1.streamiocast.data.audioCodecOfMime
+import com.sebasgl1.streamiocast.data.classify
+import com.sebasgl1.streamiocast.data.classifyTv
+import com.sebasgl1.streamiocast.cast.TargetDevice
 import com.sebasgl1.streamiocast.dlna.DlnaDevice
 import com.sebasgl1.streamiocast.dlna.DlnaHandoff
 import com.sebasgl1.streamiocast.dlna.dlnaMime
@@ -563,7 +568,15 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
                 cast.isConnected -> StreamFilter.CHROMECAST
                 else -> StreamFilter.ALL
             }
-            val pick = outcome?.let { pickNextStream(it.results, request.bingeGroup, device) }
+            // Se clasifica con el perfil del aparato que se está usando (y lo que aprendió).
+            val results = outcome?.results?.map { r ->
+                when (device) {
+                    StreamFilter.TV -> r.copy(tv = classifyTv(r.info, tvProfile()))
+                    StreamFilter.CHROMECAST -> r.copy(cls = classify(r.info, castProfile()))
+                    StreamFilter.ALL -> r
+                }
+            }
+            val pick = results?.let { pickNextStream(it, request.bingeGroup, device) }
             if (pick == null) {
                 _ui.update {
                     it.copy(
@@ -896,19 +909,53 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
         sendToCast(player.currentPosition, force = true)
     }
 
-    private suspend fun castCompatReport(): CompatReport? {
+    private fun castProfile() = app.compat.castProfile(app.selectedDevice.value as? TargetDevice.Chromecast)
+
+    private fun tvProfile() = app.compat.tvProfile(app.selectedDevice.value as? TargetDevice.Tv)
+
+    /**
+     * La pista de audio que va a sonar en el televisor: la marcada "por defecto" en el archivo, o
+     * la primera. El TV no deja elegir otra por DLNA ni el receptor de Google por esta vía.
+     */
+    private fun remoteAudioFormat(tracks: Tracks?): Format? {
+        val formats = tracks?.groups.orEmpty()
+            .filter { it.type == C.TRACK_TYPE_AUDIO }
+            .flatMap { g -> (0 until g.length).map { g.getTrackFormat(it) } }
+        return formats.firstOrNull { it.selectionFlags and C.SELECTION_FLAG_DEFAULT != 0 } ?: formats.firstOrNull()
+    }
+
+    /** Lee el archivo real (vídeo y audio) y lo compara con el aparato al que se va a mandar. */
+    private suspend fun remoteCompatReport(toTv: Boolean): CompatReport? {
         if (!tracksKnown.isCompleted) withTimeoutOrNull(20_000) { tracksKnown.await() }
         val tracks = lastTracks ?: return null
         val videoGroup = tracks.groups.firstOrNull { it.type == C.TRACK_TYPE_VIDEO }
         val video = videoGroup?.let { g ->
             g.getTrackFormat((0 until g.length).firstOrNull { g.isTrackSelected(it) } ?: 0)
         }
-        // En el Chromecast suena la primera pista de audio del archivo.
-        val audio = tracks.groups.firstOrNull { it.type == C.TRACK_TYPE_AUDIO }?.getTrackFormat(0)
-        return checkCastCompat(
-            video?.let { VideoFacts(it.sampleMimeType, it.width, it.height, it.codecs, it.frameRate) },
-            audio?.sampleMimeType,
-        )
+        val facts = video?.let { VideoFacts(it.sampleMimeType, it.width, it.height, it.codecs, it.frameRate) }
+        val audio = remoteAudioFormat(tracks)?.sampleMimeType
+        return if (toTv) checkTvCompat(facts, audio, tvProfile()) else checkCastCompat(facts, audio, castProfile())
+    }
+
+    /**
+     * Botón "No tiene sonido": la app recuerda que en este aparato ese audio suena mudo. Desde ya,
+     * los streams con ese audio salen en rojo para este aparato.
+     */
+    fun reportNoSound() {
+        val device = app.selectedDevice.value
+        val codec = audioCodecOfMime(remoteAudioFormat(lastTracks)?.sampleMimeType)
+        val message = when {
+            device == null -> "Primero elige el aparato al que transmites."
+            codec == null -> "No pude saber qué audio trae este archivo. Prueba otro stream."
+            codec == AudioCodec.AAC || codec == AudioCodec.MP3 -> "El audio es ${codec.label}, que " +
+                "${device.name} debería reproducir. Revisa el volumen del TV o prueba otro stream."
+            else -> {
+                app.compat.markMuted(device.key, codec)
+                "Anotado: en ${device.name} el audio ${codec.label} suena mudo. Desde ahora esos streams " +
+                    "salen en rojo para este aparato. Elige otro stream con otro audio."
+            }
+        }
+        _ui.update { it.copy(castMessage = message, noSoundReported = true) }
     }
 
     private fun sendToCast(startAtMs: Long, force: Boolean = false) {
@@ -929,11 +976,11 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
                 return@launch
             }
 
-            // Chromecast: se revisa el vídeo real (códec, resolución, 10 bits) antes de mandarlo.
+            // Se revisa el archivo real (vídeo y audio) contra el aparato antes de mandarlo.
             var warning: String? = null
-            if (target === cast && !force) {
+            if (!force) {
                 _ui.update { it.copy(cast = it.cast?.copy(state = "Revisando el formato…")) }
-                val report = castCompatReport()
+                val report = remoteCompatReport(toTv = target === dlna)
                 if (report != null && report.blocking.isNotEmpty()) {
                     _ui.update {
                         it.copy(castBlocked = report.blocking.joinToString("\n"), cast = it.cast?.copy(state = "No compatible"))
@@ -941,8 +988,13 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
                     return@launch
                 }
                 warning = report?.warnings?.joinToString("\n")?.takeIf { it.isNotEmpty() }
+                val ok = report != null && warning == null
+                val name = app.selectedDevice.value?.name ?: "el televisor"
+                _ui.update { it.copy(compatOk = if (ok) "Formato revisado: vídeo y audio compatibles con $name" else null) }
+            } else {
+                _ui.update { it.copy(compatOk = null) }
             }
-            _ui.update { it.copy(castBlocked = null) }
+            _ui.update { it.copy(castBlocked = null, noSoundReported = false) }
 
             val media = if (target === dlna) {
                 val srt = if (host != null) dlnaSubtitleUrl(host) else null

@@ -1,6 +1,9 @@
 package com.sebasgl1.streamiocast
 
+import com.sebasgl1.streamiocast.data.AudioCodec
 import com.sebasgl1.streamiocast.data.Stream
+import com.sebasgl1.streamiocast.data.classifyTv
+import com.sebasgl1.streamiocast.data.tvProfileFor
 import com.sebasgl1.streamiocast.data.StreamFilter
 import com.sebasgl1.streamiocast.data.StreamResult
 import com.sebasgl1.streamiocast.data.Verdict
@@ -29,14 +32,35 @@ class TvCompatTest {
     }
 
     @Test
-    fun av1IsBadOnTv() {
-        assertEquals(Verdict.BAD, result("Movie.2023.1080p.WEB.AV1.Opus\n👤 50").tv.verdict)
+    fun av1DependsOnTheTvYear() {
+        val av1 = result("Movie.2023.1080p.WEB.AV1.AAC\n👤 50").info
+        assertEquals(Verdict.MAYBE, classifyTv(av1).verdict)
+        assertEquals(Verdict.BAD, classifyTv(av1, tvProfileFor("Samsung", "UN43MU6100", "")).verdict)
+        assertEquals(Verdict.GOOD, classifyTv(av1, tvProfileFor("Samsung", "UN55TU7000", "")).verdict)
     }
 
     @Test
-    fun dtsOnlyIsDoubtfulOnTv() {
-        assertEquals(Verdict.MAYBE, result("Movie.2010.1080p.BluRay.x264.DTS\n👤 50").tv.verdict)
-        assertEquals(Verdict.GOOD, result("Movie.2010.1080p.BluRay.x264.DTS.AC3\n👤 50").tv.verdict)
+    fun dtsDependsOnTheTv() {
+        val dts = result("Movie.2010.1080p.BluRay.x264.DTS\n👤 50").info
+        val mixed = result("Movie.2010.1080p.BluRay.x264.DTS.AC3\n👤 50").info
+        // Sin TV elegido: dudoso (el de tu amiga podía ser de 2018+).
+        assertEquals(Verdict.MAYBE, classifyTv(dts).verdict)
+        assertEquals(Verdict.MAYBE, classifyTv(mixed).verdict)
+        // Samsung 2017: DTS suena.
+        val samsung2017 = tvProfileFor("Samsung Electronics", "UN43MU6100", "[TV] Samsung 6 Series (43)")
+        assertEquals(Verdict.GOOD, classifyTv(dts, samsung2017).verdict)
+        // Samsung 2018: DTS mudo; con AC3 de segunda pista, dudoso.
+        val samsung2018 = tvProfileFor("Samsung Electronics", "UN55NU7100", "")
+        assertEquals(Verdict.BAD, classifyTv(dts, samsung2018).verdict)
+        assertEquals(Verdict.MAYBE, classifyTv(mixed, samsung2018).verdict)
+    }
+
+    @Test
+    fun learnedMutedAudioTurnsRed() {
+        val eac3 = result("Show.S01E01.1080p.WEB.H264.DDP5.1\n👤 50").info
+        val profile = tvProfileFor("Hisense", "55A6", "", muted = setOf(AudioCodec.EAC3))
+        assertEquals(Verdict.BAD, classifyTv(eac3, profile).verdict)
+        assertEquals(Verdict.GOOD, classifyTv(eac3, tvProfileFor("Hisense", "55A6", "")).verdict)
     }
 
     @Test

@@ -201,12 +201,14 @@ fun analyzeStream(s: Stream): StreamInfo {
     )
 }
 
-// --- Veredicto -------------------------------------------------------------------------
+// --- Veredicto para el Chromecast -----------------------------------------------------------
 
-fun classify(info: StreamInfo): Classification {
+fun classify(info: StreamInfo, profile: CastProfile = CastProfile.GEN2): Classification {
     val reasons = mutableListOf<String>()
     var bad = false
     var maybe = false
+    val device = if (profile.advanced) "tu ${profile.label}" else "tu Chromecast"
+    val maxRes = if (profile.advanced) 2160 else 1080
 
     val res = info.resolution
     when {
@@ -214,18 +216,22 @@ fun classify(info: StreamInfo): Classification {
             maybe = true
             reasons += "No indica la resolución."
         }
-        res > 1080 -> {
+        res > maxRes -> {
             bad = true
             val label = if (res >= 2160) "4K" else "${res}p"
-            reasons += "$label: el Chromecast de 2ª gen llega solo a 1080p."
+            reasons += "$label: $device llega solo a ${maxRes}p."
         }
     }
 
     when (info.codec) {
         VideoCodec.H264 -> Unit
-        VideoCodec.HEVC, VideoCodec.AV1, VideoCodec.VP9 -> {
+        VideoCodec.HEVC, VideoCodec.VP9 -> if (!profile.advanced) {
             bad = true
-            reasons += "Códec ${info.codec.label}: tu Chromecast solo reproduce H.264."
+            reasons += "Códec ${info.codec.label}: $device solo reproduce H.264."
+        }
+        VideoCodec.AV1 -> if (!profile.av1) {
+            bad = true
+            reasons += "Códec AV1: $device no lo reproduce."
         }
         VideoCodec.MPEG4, VideoCodec.VC1, VideoCodec.MPEG2 -> {
             bad = true
@@ -235,22 +241,27 @@ fun classify(info: StreamInfo): Classification {
             maybe = true
             reasons += "El nombre menciona varios códecs (por ejemplo x264 y x265): puede ser el equivocado."
         }
-        VideoCodec.UNKNOWN -> {
+        VideoCodec.UNKNOWN -> if (!profile.advanced) {
             maybe = true
             reasons += "El nombre no indica el códec; podría ser HEVC."
         }
     }
 
-    val codecMayBeH264 = info.codec == VideoCodec.H264 ||
-        info.codec == VideoCodec.UNKNOWN ||
-        info.codec == VideoCodec.MIXED
-    if (info.tenBit && codecMayBeH264) {
-        bad = true
-        reasons += "Vídeo de 10 bits: tu Chromecast solo decodifica H.264 de 8 bits."
-    }
-    if (info.hdr) {
-        bad = true
-        reasons += "HDR / Dolby Vision: no es compatible con tu Chromecast."
+    if (!profile.advanced) {
+        val codecMayBeH264 = info.codec == VideoCodec.H264 ||
+            info.codec == VideoCodec.UNKNOWN ||
+            info.codec == VideoCodec.MIXED
+        if (info.tenBit && codecMayBeH264) {
+            bad = true
+            reasons += "Vídeo de 10 bits: $device solo decodifica H.264 de 8 bits."
+        }
+        if (info.hdr) {
+            bad = true
+            reasons += "HDR / Dolby Vision: no es compatible con $device."
+        }
+    } else if (info.dolbyVision && !info.hdr10) {
+        maybe = true
+        reasons += "Dolby Vision sin HDR10 de respaldo: los colores pueden salir mal."
     }
     if (info.lowQuality) {
         bad = true
@@ -262,18 +273,18 @@ fun classify(info: StreamInfo): Classification {
         reasons += "Archivo muy pesado (${info.sizeText ?: "más de 20 GB"}): puede cortarse al transmitir."
     }
 
-    val audioOk = info.audio.any { it.castOk }
-    val needsAudioConvert = info.audio.isNotEmpty() && !audioOk
-    if (needsAudioConvert) {
-        maybe = true
-        reasons += "Audio ${info.audio.joinToString("/") { it.label }}: tu Chromecast podría reproducirlo " +
-            "sin sonido. Para transmitir, mejor uno con AAC."
-    } else if (info.audio.isEmpty()) {
-        reasons += "No indica el audio."
+    val audio = checkAudio(info.audio, profile.playableAudio(), profile.silentAudio(), device)
+    when (audio.verdict) {
+        Verdict.BAD -> bad = true
+        Verdict.MAYBE -> maybe = true
+        Verdict.GOOD -> Unit
     }
+    audio.reason?.let { reasons += it }
+    if (info.audio.isEmpty()) reasons += "No indica el audio."
+    val needsAudioConvert = audio.verdict != Verdict.GOOD
 
     val needsRemux = info.container !in setOf("mp4", "m4v", "webm")
-    if (needsRemux) {
+    if (needsRemux && !profile.advanced) {
         reasons += "Contenedor ${info.container?.uppercase() ?: "MKV u otro"}: el Chromecast lo reproduce " +
             "si el vídeo es H.264 y el audio AAC."
     }
@@ -284,30 +295,40 @@ fun classify(info: StreamInfo): Classification {
         else -> Verdict.GOOD
     }
     if (verdict == Verdict.GOOD) {
-        reasons.add(0, "H.264 de 8 bits a ${res}p: compatible con tu Chromecast.")
+        val what = listOfNotNull(
+            info.codec.takeIf { it != VideoCodec.UNKNOWN }?.let { if (it == VideoCodec.H264 && !profile.advanced) "H.264 de 8 bits" else it.label },
+            res?.let { info.resolutionLabel() },
+        ).joinToString(" a ")
+        reasons.add(0, if (what.isEmpty()) "Compatible con $device." else "$what: compatible con $device.")
     }
 
     return Classification(verdict, reasons, needsRemux, needsAudioConvert)
 }
 
-// --- Veredicto para el televisor (Samsung UN43MU6100, Tizen 2017, por DLNA) ---------------
+// --- Veredicto para el televisor DLNA ----------------------------------------------------------
 
 /*
- * El TV decodifica casi todo: H.264, HEVC (también 10 bits y HDR10) hasta 4K, VP9, Xvid, VC-1 y
- * MPEG-2, en MKV, MP4, AVI o TS, con audio AAC, MP3, AC3 o E-AC3. No decodifica AV1 ni Dolby Vision.
- * DTS, TrueHD, FLAC y Opus quedan como dudosos: no está confirmado que suenen por DLNA.
+ * Los TV decodifican casi todo el vídeo: H.264, HEVC (también 10 bits y HDR10) hasta 4K, VP9,
+ * Xvid, VC-1 y MPEG-2. Lo que más falla es el audio (DTS, TrueHD) y, según el modelo, AV1 y
+ * Dolby Vision: eso lo decide el perfil del TV.
  */
-private val TV_AUDIO_OK = setOf(AudioCodec.AAC, AudioCodec.MP3, AudioCodec.AC3, AudioCodec.EAC3)
-
-fun classifyTv(info: StreamInfo): Classification {
+fun classifyTv(info: StreamInfo, profile: TvProfile = TvProfile.GENERIC): Classification {
     val reasons = mutableListOf<String>()
     var bad = false
     var maybe = false
+    val device = if (profile == TvProfile.GENERIC || profile.label == "TV") "tu TV" else "tu ${profile.label}"
 
     when (info.codec) {
-        VideoCodec.AV1 -> {
-            bad = true
-            reasons += "Códec AV1: tu TV de 2017 no lo decodifica."
+        VideoCodec.AV1 -> when (profile.av1) {
+            Support.NO -> {
+                bad = true
+                reasons += "Códec AV1: $device no lo decodifica."
+            }
+            Support.UNKNOWN -> {
+                maybe = true
+                reasons += "Códec AV1: solo lo reproducen los TV de 2020 en adelante."
+            }
+            Support.YES -> Unit
         }
         VideoCodec.MIXED -> {
             maybe = true
@@ -315,21 +336,24 @@ fun classifyTv(info: StreamInfo): Classification {
         }
         else -> Unit
     }
-    if (info.dolbyVision && !info.hdr10) {
+    if (info.dolbyVision && !info.hdr10 && profile.dolbyVision != Support.YES) {
         maybe = true
-        reasons += "Dolby Vision: tu TV no lo soporta. Si el archivo no trae HDR10 de respaldo, " +
-            "los colores pueden salir verdes o morados."
+        reasons += "Dolby Vision: ${if (profile.dolbyVision == Support.NO) "$device no lo soporta" else "no todos los TV lo soportan"}. " +
+            "Sin HDR10 de respaldo, los colores pueden salir verdes o morados."
     }
     if (info.lowQuality) {
         bad = true
         reasons += "Grabación de cine (CAM/TS): mala calidad."
     }
-    val unsure = info.audio.filter { it !in TV_AUDIO_OK }
-    if (info.audio.isNotEmpty() && info.audio.none { it in TV_AUDIO_OK }) {
-        maybe = true
-        reasons += "Audio ${unsure.joinToString("/") { it.label }}: no es seguro que tu TV lo reproduzca " +
-            "con sonido. Mejor uno con AC3, E-AC3 o AAC."
+
+    val audio = checkAudio(info.audio, profile.playableAudio(), profile.silentAudio(), device)
+    when (audio.verdict) {
+        Verdict.BAD -> bad = true
+        Verdict.MAYBE -> maybe = true
+        Verdict.GOOD -> Unit
     }
+    audio.reason?.let { reasons += it }
+
     val size = info.sizeBytes
     val res = info.resolution ?: 0
     if (size != null && (size > 60 * GIB || (res >= 2160 && size > 40 * GIB))) {
@@ -348,7 +372,8 @@ fun classifyTv(info: StreamInfo): Classification {
             info.codec.takeIf { it != VideoCodec.UNKNOWN }?.label,
             info.resolutionLabel(),
         ).joinToString(" a ")
-        reasons.add(0, if (what.isEmpty()) "Tu TV reproduce casi todos los formatos." else "$what: tu TV lo reproduce.")
+        reasons.add(0, if (what.isEmpty()) "$device reproduce casi todos los formatos." else "$what: $device lo reproduce.")
+        if (info.audio.isEmpty()) reasons += "El nombre no indica el audio: se revisa al abrir el archivo."
     }
     return Classification(verdict, reasons, needsRemux = false, needsAudioConvert = false)
 }

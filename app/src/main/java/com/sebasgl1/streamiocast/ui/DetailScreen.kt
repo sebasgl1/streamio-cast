@@ -2,6 +2,8 @@
 
 package com.sebasgl1.streamiocast.ui
 
+import com.sebasgl1.streamiocast.cast.TransmitPill
+
 import android.app.Application
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -137,6 +139,13 @@ fun DetailScreen(
         ) {
             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Volver")
         }
+
+        TransmitPill(
+            overImage = true,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(8.dp),
+        )
     }
 }
 

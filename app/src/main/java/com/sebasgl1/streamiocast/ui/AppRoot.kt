@@ -5,6 +5,11 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.text.font.FontWeight
+import com.sebasgl1.streamiocast.cast.TransmitPill
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
@@ -90,6 +95,26 @@ fun AppRoot() {
 
         Scaffold(
             containerColor = MaterialTheme.colorScheme.background,
+            topBar = {
+                // Título y botón de transmitir: eliges el aparato antes de buscar qué ver.
+                if (showNavigation) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .statusBarsPadding()
+                            .padding(start = 16.dp, end = 12.dp, top = 8.dp, bottom = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "Streamio Cast",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TransmitPill()
+                    }
+                }
+            },
             bottomBar = {
                 if (showNavigation && !wide) {
                     NavigationBar {

@@ -1,6 +1,11 @@
 package com.sebasgl1.streamiocast
 
 import android.app.Application
+import com.google.android.gms.cast.framework.CastContext
+import com.google.android.gms.cast.framework.CastSession
+import com.google.android.gms.cast.framework.SessionManagerListener
+import com.sebasgl1.streamiocast.cast.CompatMemory
+import com.sebasgl1.streamiocast.cast.TargetDevice
 import com.sebasgl1.streamiocast.data.AddonRepository
 import com.sebasgl1.streamiocast.data.PlaybackPrefs
 import com.sebasgl1.streamiocast.data.StremioSync
@@ -25,10 +30,84 @@ class StremioApp : Application() {
     val playbackPrefs: PlaybackPrefs by lazy { PlaybackPrefs(this) }
     val history: WatchHistory by lazy { WatchHistory(this) }
     val sync: StremioSync by lazy { StremioSync(repo, history) }
+    val compat: CompatMemory by lazy { CompatMemory(this) }
+
+    // --- Aparato elegido (Chromecast o TV), desde cualquier pantalla ------------------------
 
     /** El televisor DLNA elegido (sigue elegido para el siguiente episodio hasta que lo sueltes). */
     @Volatile
     var dlnaDevice: DlnaDevice? = null
+        set(value) {
+            field = value
+            publishDevice()
+        }
+
+    @Volatile
+    private var castDevice: TargetDevice.Chromecast? = null
+
+    private val _device = MutableStateFlow<TargetDevice?>(null)
+
+    /** A qué se va a transmitir: el TV DLNA si hay uno elegido, si no el Chromecast conectado. */
+    val selectedDevice: StateFlow<TargetDevice?> = _device
+
+    private fun publishDevice() {
+        _device.value = dlnaDevice?.let { TargetDevice.Tv(it) } ?: castDevice
+    }
+
+    private val castContext: CastContext? by lazy { runCatching { CastContext.getSharedInstance(this) }.getOrNull() }
+
+    private val castWatcher = object : SessionManagerListener<CastSession> {
+        override fun onSessionStarted(session: CastSession, sessionId: String) = castConnected(session)
+        override fun onSessionResumed(session: CastSession, wasSuspended: Boolean) = castConnected(session)
+        override fun onSessionEnded(session: CastSession, error: Int) = castGone()
+        override fun onSessionStartFailed(session: CastSession, error: Int) = castGone()
+        override fun onSessionSuspended(session: CastSession, reason: Int) = Unit
+        override fun onSessionEnding(session: CastSession) = Unit
+        override fun onSessionStarting(session: CastSession) = Unit
+        override fun onSessionResuming(session: CastSession, sessionId: String) = Unit
+        override fun onSessionResumeFailed(session: CastSession, error: Int) = castGone()
+    }
+
+    private fun castConnected(session: CastSession) {
+        val device = session.castDevice
+        castDevice = TargetDevice.Chromecast(device?.friendlyName ?: "Chromecast", device?.modelName)
+        publishDevice()
+    }
+
+    private fun castGone() {
+        castDevice = null
+        publishDevice()
+    }
+
+    /** Se eligió un Chromecast en la lista (la conexión la hace el propio Cast SDK). */
+    fun selectChromecast() {
+        val s = session?.takeIf { it.isOpen }
+        if (s != null) s.prepareForChromecast() else dlnaDevice = null
+    }
+
+    /** Se eligió un TV DLNA: si hay un vídeo sonando pasa al TV; si no, queda listo para el próximo. */
+    fun selectDlna(device: DlnaDevice) {
+        val s = session?.takeIf { it.isOpen }
+        if (s != null) {
+            s.connectDlna(device)
+        } else {
+            dlnaDevice = device
+            castContext?.sessionManager?.endCurrentSession(true)
+        }
+    }
+
+    /** Dejar de transmitir (o soltar el aparato elegido antes de reproducir). */
+    fun stopDevice() {
+        val s = session?.takeIf { it.isOpen }
+        if (s != null && s.isCasting) {
+            s.stopCasting()
+        } else {
+            dlnaDevice = null
+            castContext?.sessionManager?.endCurrentSession(true)
+        }
+    }
+
+    // --- Reproducción ------------------------------------------------------------------
 
     /** Stream elegido en la lista, a la espera de que lo recoja la pantalla de reproducción. */
     @Volatile
@@ -77,5 +156,10 @@ class StremioApp : Application() {
         super.onCreate()
         CrashReporter.install(this)
         repo = AddonRepository(this)
+        // Si el Chromecast ya estaba conectado (desde otra app o una sesión anterior), se nota de una.
+        castContext?.sessionManager?.let { manager ->
+            manager.addSessionManagerListener(castWatcher, CastSession::class.java)
+            manager.currentCastSession?.takeIf { it.isConnected }?.let { castConnected(it) }
+        }
     }
 }

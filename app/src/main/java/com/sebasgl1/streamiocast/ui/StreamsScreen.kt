@@ -60,6 +60,12 @@ import com.sebasgl1.streamiocast.history.WatchTarget
 import com.sebasgl1.streamiocast.player.PlaybackRequest
 import com.sebasgl1.streamiocast.player.toPlayback
 import com.sebasgl1.streamiocast.data.Classification
+import com.sebasgl1.streamiocast.data.classify
+import com.sebasgl1.streamiocast.data.classifyTv
+import com.sebasgl1.streamiocast.cast.TargetDevice
+import com.sebasgl1.streamiocast.cast.TransmitPill
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.runtime.LaunchedEffect
 import com.sebasgl1.streamiocast.data.StreamFilter
 import com.sebasgl1.streamiocast.data.StreamResult
 import com.sebasgl1.streamiocast.data.streamComparator
@@ -126,22 +132,44 @@ fun StreamsScreen(
     vm: StreamsViewModel = viewModel(),
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
-    val prefs = (LocalContext.current.applicationContext as StremioApp).playbackPrefs
+    val app = LocalContext.current.applicationContext as StremioApp
+    val prefs = app.playbackPrefs
+    val device by app.selectedDevice.collectAsStateWithLifecycle()
     var filter by rememberSaveable {
         mutableStateOf(runCatching { StreamFilter.valueOf(prefs.streamFilter) }.getOrDefault(StreamFilter.CHROMECAST))
     }
     var selected by remember { mutableStateOf<StreamResult?>(null) }
 
-    val visible = remember(state.results, filter) {
+    // Al elegir (o cambiar) el aparato, la lista se filtra sola para él.
+    LaunchedEffect(device?.key) {
+        when (device) {
+            is TargetDevice.Chromecast -> filter = StreamFilter.CHROMECAST
+            is TargetDevice.Tv -> filter = StreamFilter.TV
+            null -> Unit
+        }
+    }
+
+    // Colores según el aparato real (marca, año, modelo) y lo aprendido con "No tiene sonido".
+    val castDevice = device as? TargetDevice.Chromecast
+    val tvDevice = device as? TargetDevice.Tv
+    val results = remember(state.results, device) {
+        val castProfile = app.compat.castProfile(castDevice)
+        val tvProfile = app.compat.tvProfile(tvDevice)
+        state.results.map { it.copy(cls = classify(it.info, castProfile), tv = classifyTv(it.info, tvProfile)) }
+    }
+    val castLabel = castDevice?.name ?: "Chromecast"
+    val tvLabel = tvDevice?.name ?: "TV"
+
+    val visible = remember(results, filter) {
         val list = if (filter == StreamFilter.ALL) {
-            state.results
+            results
         } else {
-            state.results.filter { it.verdictFor(filter) != Verdict.BAD }
+            results.filter { it.verdictFor(filter) != Verdict.BAD }
         }
         list.sortedWith(streamComparator(filter))
     }
-    val ccCount = state.results.count { it.cls.verdict != Verdict.BAD }
-    val tvCount = state.results.count { it.tv.verdict != Verdict.BAD }
+    val ccCount = results.count { it.cls.verdict != Verdict.BAD }
+    val tvCount = results.count { it.tv.verdict != Verdict.BAD }
 
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -160,33 +188,33 @@ fun StreamsScreen(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    text = "Streams de tus addons",
+                    text = device?.let { "Filtrados para ${it.name}" } ?: "Streams de tus addons",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = if (device != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            TransmitPill(modifier = Modifier.padding(end = 4.dp))
         }
 
         // Filtro: qué streams sirven en el aparato al que vas a transmitir.
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp),
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            val loaded = !state.loading && state.results.isNotEmpty()
-            listOf(
-                StreamFilter.ALL to "Todos" + if (loaded) " (${state.results.size})" else "",
-                StreamFilter.CHROMECAST to "Chromecast" + if (loaded) " ($ccCount)" else "",
-                StreamFilter.TV to "TV" + if (loaded) " ($tvCount)" else "",
-            ).forEach { (f, label) ->
+            val loaded = !state.loading && results.isNotEmpty()
+            val chips = listOf(
+                StreamFilter.ALL to "Todos" + if (loaded) " (${results.size})" else "",
+                StreamFilter.CHROMECAST to castLabel + if (loaded) " ($ccCount)" else "",
+                StreamFilter.TV to tvLabel + if (loaded) " ($tvCount)" else "",
+            )
+            items(chips) { (f, label) ->
                 FilterChip(
                     selected = filter == f,
                     onClick = {
                         filter = f
                         prefs.streamFilter = f.name
                     },
-                    label = { Text(label) },
+                    label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 )
             }
         }
@@ -220,15 +248,15 @@ fun StreamsScreen(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     items(visible) { result ->
-                        StreamRow(result) { selected = result }
+                        StreamRow(result, castLabel, tvLabel) { selected = result }
                     }
                 }
 
                 else -> {
                     val emptyMessage = state.message
                         ?: if (state.results.isNotEmpty()) {
-                            "Ninguno de los ${state.results.size} streams sirve en " +
-                                (if (filter == StreamFilter.TV) "tu TV" else "tu Chromecast") +
+                            "Ninguno de los ${results.size} streams sirve en " +
+                                (if (filter == StreamFilter.TV) tvLabel else castLabel) +
                                 ". Toca \"Todos\" para verlos."
                         } else {
                             "No se encontraron streams para este título."
@@ -253,6 +281,9 @@ fun StreamsScreen(
         val onMobile = remember(result) { isOnMobileData(context) }
         StreamDialog(
             item = result,
+            castLabel = castLabel,
+            tvLabel = tvLabel,
+            playLabel = device?.let { "Reproducir en ${it.name}" } ?: "Reproducir",
             onMobileData = onMobile,
             onPlay = {
                 selected = null
@@ -294,7 +325,7 @@ private fun DeviceBadge(device: String, verdict: Verdict) {
 }
 
 @Composable
-private fun StreamRow(item: StreamResult, onClick: () -> Unit) {
+private fun StreamRow(item: StreamResult, castLabel: String, tvLabel: String, onClick: () -> Unit) {
     val info = item.info
     val tags = buildList<String> {
         info.resolutionLabel()?.let { add(it) }
@@ -317,9 +348,9 @@ private fun StreamRow(item: StreamResult, onClick: () -> Unit) {
     ) {
         Column(Modifier.padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                DeviceBadge("Chromecast", item.cls.verdict)
+                DeviceBadge(shortLabel(castLabel), item.cls.verdict)
                 Spacer(Modifier.width(6.dp))
-                DeviceBadge("TV", item.tv.verdict)
+                DeviceBadge(shortLabel(tvLabel), item.tv.verdict)
                 Spacer(Modifier.width(8.dp))
                 Text(
                     text = tags.joinToString(" · "),
@@ -347,10 +378,18 @@ private fun StreamRow(item: StreamResult, onClick: () -> Unit) {
 }
 
 @Composable
-private fun StreamDialog(item: StreamResult, onMobileData: Boolean, onPlay: () -> Unit, onDismiss: () -> Unit) {
+private fun StreamDialog(
+    item: StreamResult,
+    castLabel: String,
+    tvLabel: String,
+    playLabel: String,
+    onMobileData: Boolean,
+    onPlay: () -> Unit,
+    onDismiss: () -> Unit,
+) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        confirmButton = { Button(onClick = onPlay) { Text("Reproducir") } },
+        confirmButton = { Button(onClick = onPlay) { Text(playLabel, maxLines = 1, overflow = TextOverflow.Ellipsis) } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cerrar") } },
         title = {
             Text(
@@ -368,8 +407,8 @@ private fun StreamDialog(item: StreamResult, onMobileData: Boolean, onPlay: () -
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                DeviceReasons("Chromecast", item.cls)
-                DeviceReasons("TV", item.tv)
+                DeviceReasons(castLabel, item.cls)
+                DeviceReasons(tvLabel, item.tv)
                 if (onMobileData) {
                     Text(
                         text = "Estás con datos móviles" +
@@ -379,14 +418,20 @@ private fun StreamDialog(item: StreamResult, onMobileData: Boolean, onPlay: () -
                     )
                 }
                 Text(
-                    text = "En el celular se puede ver cualquier stream. Para el televisor, reprodúcelo y " +
-                        "toca el ícono de transmitir arriba a la derecha.",
+                    text = "En el celular se puede ver cualquier stream. Antes de mandarlo al televisor, " +
+                        "la app revisa el archivo real y te avisa si no es compatible.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.secondary,
                 )
             }
         },
     )
+}
+
+/** Nombre corto para las etiquetas de la lista ("Samsung 6 Series (43)" → "Samsung 6 Series"). */
+private fun shortLabel(name: String): String {
+    val clean = name.replace(Regex("""^\[[^]]*]\s*"""), "").replace(Regex("""\s*\([^)]*\)$"""), "").trim()
+    return if (clean.length <= 16) clean.ifEmpty { name } else clean.take(15).trimEnd() + "…"
 }
 
 @Composable

@@ -237,7 +237,43 @@ fun SettingsScreen(vm: SettingsViewModel = viewModel()) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+        item { DeviceMemory() }
         item { StartPrefs() }
         item { LanguagePrefs() }
+    }
+}
+
+/** Lo que la app aprendió con "No tiene sonido" para el aparato elegido, con opción de olvidarlo. */
+@Composable
+private fun DeviceMemory() {
+    val app = androidx.compose.ui.platform.LocalContext.current.applicationContext as StremioApp
+    val device by app.selectedDevice.collectAsStateWithLifecycle()
+    val current = device ?: return
+    var muted by remember(current.key) { mutableStateOf(app.compat.muted(current.key)) }
+    val profile = when (current) {
+        is com.sebasgl1.streamiocast.cast.TargetDevice.Tv -> app.compat.tvProfile(current).label
+        is com.sebasgl1.streamiocast.cast.TargetDevice.Chromecast -> app.compat.castProfile(current).label
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 16.dp)) {
+        Text("Transmisión", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        Text("Conectado a ${current.name} · reconocido como $profile", style = MaterialTheme.typography.bodyMedium)
+        if (muted.isEmpty()) {
+            Text(
+                text = "Si un stream se ve pero no se oye, toca \"No tiene sonido\" mientras transmites: " +
+                    "la app recuerda ese audio y lo marca en rojo para este aparato.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            Text(
+                text = "Audios que suenan mudos aquí: ${muted.joinToString(", ") { it.label }}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedButton(onClick = {
+                app.compat.forget(current.key)
+                muted = emptySet()
+            }) { Text("Olvidar lo aprendido") }
+        }
     }
 }
