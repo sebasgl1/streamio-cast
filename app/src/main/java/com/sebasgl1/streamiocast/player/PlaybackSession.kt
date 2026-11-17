@@ -155,12 +155,17 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
 
     private val remoteEvents: CastHandoff.Events = object : CastHandoff.Events {
         override fun onConnected(device: String) {
+            // Si se pasa de un aparato a otro (TV → Chromecast), se sigue donde iba el anterior,
+            // no donde se quedó el celular cuando empezó a transmitir.
+            val at = if (remoteLoaded) _ui.value.cast?.positionMs ?: player.currentPosition else player.currentPosition
             // Aparato nuevo: lo que se convertía para el anterior ya no aplica.
             dropConversion()
             remoteLoaded = false
-            _ui.update { it.copy(cast = CastUi(device), castMessage = null, castBlocked = null) }
+            _ui.update {
+                it.copy(cast = CastUi(device), castMessage = null, castBlocked = null, convertOffer = null, compatOk = null)
+            }
             // Si aún se está llenando el buffer, se manda al TV cuando termine (o le des reproducir).
-            if (_ui.value.phase is PlayerPhase.Playing && gateOpen) sendToCast(player.currentPosition)
+            if (_ui.value.phase is PlayerPhase.Playing && gateOpen) sendToCast(at)
         }
 
         override fun onDisconnected(lastPositionMs: Long) {
@@ -251,7 +256,15 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
     private fun convertShift(): Long = if (convertPlan != null) convertBaseMs else 0L
 
     /** Posición real en el vídeo de lo que suena en el aparato. */
-    private fun remotePos(): Long = pendingSeekMs ?: ((remote?.positionMs ?: 0L) + convertShift())
+    private fun remotePos(): Long {
+        pendingSeekMs?.let { return it }
+        // Aún no hay nada cargado en el aparato (revisando o "No compatible"): manda el celular.
+        if (!remoteLoaded) return player.currentPosition
+        return (remote?.positionMs ?: 0L) + convertShift()
+    }
+
+    /** La pista de audio que elegiste en la app (posición entre las pistas de audio), si elegiste una. */
+    private var userAudioIndex: Int? = null
 
     init {
         // Idiomas preferidos para las pistas que vienen dentro del archivo.
@@ -404,6 +417,11 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
                 delay(500)
             }
         }
+    }
+
+    /** Quita el aviso amarillo (se toca, o se va solo a los segundos). */
+    fun dismissMessage(text: String) {
+        _ui.update { if (it.castMessage == text) it.copy(castMessage = null) else it }
     }
 
     /** "Reproducir ya": arranca aunque no se haya llenado el buffer. */
@@ -795,6 +813,39 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
         if (record) {
             val lang = _ui.value.audioTracks.firstOrNull { it.id == id }?.lang
             history.update(target) { it.copy(audioLang = lang) }
+            userAudioIndex = _ui.value.audioTracks.indexOfFirst { it.id == id }.takeIf { it >= 0 }
+            // Las pistas en pantalla no se actualizan con el celular detenido: se marca a mano.
+            _ui.update { s -> s.copy(audioTracks = s.audioTracks.map { it.copy(selected = it.id == id) }) }
+            if (remote != null) audioChangedWhileCasting()
+        }
+    }
+
+    /**
+     * Cambiaste el audio mientras transmitías. El aparato usa por su cuenta la primera pista del
+     * archivo, así que para oír otra hay que mandarla desde el celular (o reconvertir).
+     */
+    private fun audioChangedWhileCasting() {
+        val toTv = remote === dlna
+        val plan = buildConvertPlan(toTv)
+        when {
+            convertPlan != null -> {
+                // Ya se convertía: se rehace con la pista nueva (o se deja de convertir si ya no hace falta).
+                val at = remotePos()
+                convertPlan = plan
+                if (plan == null) _ui.update { it.copy(converting = null) }
+                sendToCast(at)
+            }
+            plan != null && remoteLoaded -> {
+                offeredPlan = plan
+                val device = app.selectedDevice.value?.name ?: "el televisor"
+                _ui.update {
+                    it.copy(
+                        castBlocked = "$device reproduce por su cuenta la primera pista de audio del archivo. " +
+                            "Para oír la que elegiste, hay que mandarla desde el celular.",
+                        convertOffer = offerFor(plan, remotePos()),
+                    )
+                }
+            }
         }
     }
 
@@ -975,7 +1026,7 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
     }
 
     /** Dónde arrancar en el aparato: donde va él si ya suena, o donde va el celular. */
-    private fun castStartPosition(): Long = if (remoteLoaded) remotePos() else player.currentPosition
+    private fun castStartPosition(): Long = remotePos()
 
     private fun stopTranscoder() {
         convertWatch?.cancel()
@@ -1015,6 +1066,8 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
                 formats += group.getTrackFormat(i)
             }
         }
+        // Mientras se transmite el celular está detenido y no refleja lo que eliges: manda lo elegido.
+        userAudioIndex?.takeIf { it in formats.indices }?.let { selected = it }
         val default = formats.indexOfFirst { it.selectionFlags and C.SELECTION_FLAG_DEFAULT != 0 }.coerceAtLeast(0)
         val picks = formats.mapIndexed { i, f ->
             AudioPick(
@@ -1119,6 +1172,12 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
         return formats.firstOrNull { it.selectionFlags and C.SELECTION_FLAG_DEFAULT != 0 } ?: formats.firstOrNull()
     }
 
+    /** La pista de audio número [index] (entre las de audio) del archivo. */
+    private fun audioFormatAt(index: Int): Format? = lastTracks?.groups.orEmpty()
+        .filter { it.type == C.TRACK_TYPE_AUDIO }
+        .flatMap { g -> (0 until g.length).map { g.getTrackFormat(it) } }
+        .getOrNull(index)
+
     /** Lee el archivo real (vídeo y audio) y lo compara con el aparato al que se va a mandar. */
     private suspend fun remoteCompatReport(toTv: Boolean): CompatReport? {
         if (!tracksKnown.isCompleted) withTimeoutOrNull(20_000) { tracksKnown.await() }
@@ -1134,7 +1193,13 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
      */
     fun reportNoSound() {
         val device = app.selectedDevice.value
-        val codec = audioCodecOfMime(remoteAudioFormat(lastTracks)?.sampleMimeType)
+        val current = convertPlan
+        val codec = when (current?.audio) {
+            null -> audioCodecOfMime(remoteAudioFormat(lastTracks)?.sampleMimeType)
+            com.sebasgl1.streamiocast.transcode.AudioTarget.AC3 -> AudioCodec.AC3
+            com.sebasgl1.streamiocast.transcode.AudioTarget.AAC -> AudioCodec.AAC
+            com.sebasgl1.streamiocast.transcode.AudioTarget.COPY -> audioCodecOfMime(audioFormatAt(current.audioIndex)?.sampleMimeType)
+        }
         val message = when {
             device == null -> "Primero elige el aparato al que transmites."
             codec == null -> "No pude saber qué audio trae este archivo. Prueba otro stream."
@@ -1143,7 +1208,8 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
             else -> {
                 app.compat.markMuted(device.key, codec)
                 // Ya anotado: se ofrece convertir este mismo vídeo para no tener que cambiar de stream.
-                val plan = if (convertPlan == null) buildConvertPlan(toTv = remote === dlna) else null
+                // (Si ya se convertía, el plan nuevo evita también el audio que acabas de marcar.)
+                val plan = buildConvertPlan(toTv = remote === dlna)?.takeIf { it != current }
                 if (plan != null) {
                     offeredPlan = plan
                     _ui.update {
@@ -1167,6 +1233,8 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
     private fun sendToCast(startAtMs: Long, force: Boolean = false) {
         castJob?.cancel()
         convertSeekJob?.cancel()
+        // El celular deja de sonar ya: el vídeo va al aparato (sigue descargando por delante).
+        if (remote != null) player.pause()
         castJob = scope.launch {
             val target = remote ?: return@launch
             val toTv = target === dlna

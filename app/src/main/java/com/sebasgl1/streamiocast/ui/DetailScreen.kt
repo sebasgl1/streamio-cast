@@ -62,6 +62,7 @@ import androidx.compose.ui.platform.LocalContext
 import com.sebasgl1.streamiocast.StremioApp
 import com.sebasgl1.streamiocast.history.WatchEntry
 import com.sebasgl1.streamiocast.history.WatchTarget
+import com.sebasgl1.streamiocast.history.continueWatching
 import com.sebasgl1.streamiocast.history.resumePosition
 import com.sebasgl1.streamiocast.data.MetaItem
 import com.sebasgl1.streamiocast.data.Video
@@ -156,8 +157,13 @@ private fun DetailContent(
     onStreams: (WatchTarget) -> Unit,
 ) {
     val seasons = remember(meta) { meta.videos.mapNotNull { it.season }.distinct().sorted() }
+    // Lo que sale en "Continuar viendo" para esta serie: el episodio a medias o el siguiente.
+    val resume = remember(history, meta.id) {
+        continueWatching(history.values, limit = Int.MAX_VALUE).firstOrNull { it.target.metaId == meta.id }
+    }
+    val resumeVideo = remember(meta, resume) { resume?.let { r -> meta.videos.firstOrNull { it.id == r.target.videoId } } }
     var season by rememberSaveable(meta.id) {
-        mutableStateOf(seasons.firstOrNull { it > 0 } ?: seasons.firstOrNull() ?: 0)
+        mutableStateOf(resumeVideo?.season ?: seasons.firstOrNull { it > 0 } ?: seasons.firstOrNull() ?: 0)
     }
     val episodes = remember(meta, season) {
         meta.videos.filter { it.season == season }.sortedBy { it.episode ?: 0 }
@@ -200,6 +206,9 @@ private fun DetailContent(
                     contentPadding = PaddingValues(start = 24.dp, top = 64.dp, end = 24.dp, bottom = 24.dp),
                 ) {
                     item { InfoBlock(meta, wide = true) }
+                    if (resumeVideo != null && resume != null) {
+                        item { ResumeEpisode(resume, resumeVideo) { openEpisode(resumeVideo) } }
+                    }
                 }
                 LazyColumn(
                     modifier = Modifier
@@ -216,6 +225,9 @@ private fun DetailContent(
                 contentPadding = PaddingValues(start = 16.dp, top = 64.dp, end = 16.dp, bottom = 24.dp),
             ) {
                 item { InfoBlock(meta, wide) }
+                if (seasons.isNotEmpty() && resumeVideo != null && resume != null) {
+                    item { ResumeEpisode(resume, resumeVideo) { openEpisode(resumeVideo) } }
+                }
                 if (seasons.isNotEmpty()) {
                     episodesSection(seasons, season, { season = it }, episodes, history, openEpisode)
                 } else {
@@ -230,6 +242,18 @@ private fun DetailContent(
                     }
                 }
             }
+        }
+    }
+}
+
+/** "Continuar · T1 E3": un toque para seguir la serie sin buscar el episodio en la lista. */
+@Composable
+private fun ResumeEpisode(entry: WatchEntry, video: Video, onClick: () -> Unit) {
+    Column(Modifier.padding(top = 20.dp)) {
+        WatchProgress(entry, Modifier.padding(bottom = 10.dp))
+        Button(onClick = onClick) {
+            val what = "T${video.season ?: 0} E${video.episode ?: 0}"
+            Text(if (resumePosition(entry) != null) "Continuar · $what" else "Ver siguiente · $what")
         }
     }
 }

@@ -119,8 +119,11 @@ class WatchHistory(context: Context) {
     /** Quita una serie o película de "Continuar viendo". */
     @Synchronized
     fun hideMeta(metaId: String) {
+        // Con la fecha de ahora: si no, lo traído de tu cuenta de Stremio (subido por la propia app
+        // un momento después de verlo) se veía "más nuevo" y lo volvía a mostrar al abrir la app.
+        val now = System.currentTimeMillis()
         _entries.value = _entries.value.mapValues { (_, e) ->
-            if (e.target.metaId == metaId) e.copy(hidden = true) else e
+            if (e.target.metaId == metaId) e.copy(hidden = true, updatedAt = now) else e
         }
         persist()
     }

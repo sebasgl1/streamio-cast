@@ -255,9 +255,10 @@ fun StreamsScreen(
                 else -> {
                     val emptyMessage = state.message
                         ?: if (state.results.isNotEmpty()) {
-                            "Ninguno de los ${results.size} streams sirve en " +
+                            "Ninguno de los ${results.size} streams sirve directo en " +
                                 (if (filter == StreamFilter.TV) tvLabel else castLabel) +
-                                ". Toca \"Todos\" para verlos."
+                                ". Con \"Ver todos\" puedes elegir uno igual: si el audio o el vídeo no " +
+                                "son compatibles, la app ofrece convertirlo en el celular."
                         } else {
                             "No se encontraron streams para este título."
                         }
@@ -269,7 +270,15 @@ fun StreamsScreen(
                         verticalArrangement = Arrangement.spacedBy(16.dp),
                     ) {
                         Text(emptyMessage, textAlign = TextAlign.Center)
-                        Button(onClick = vm::load) { Text("Reintentar") }
+                        if (state.message == null && state.results.isNotEmpty()) {
+                            // Hay streams, solo que el filtro los oculta: mostrarlos, no volver a buscar.
+                            Button(onClick = {
+                                filter = StreamFilter.ALL
+                                prefs.streamFilter = StreamFilter.ALL.name
+                            }) { Text("Ver todos") }
+                        } else {
+                            Button(onClick = vm::load) { Text("Reintentar") }
+                        }
                     }
                 }
             }

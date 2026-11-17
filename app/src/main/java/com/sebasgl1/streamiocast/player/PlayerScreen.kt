@@ -16,6 +16,8 @@ import androidx.core.content.ContextCompat
 import com.sebasgl1.streamiocast.cast.TransmitButton
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,6 +29,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -137,7 +140,7 @@ fun PlayerScreen(onBack: () -> Unit, model: PlayerViewModel = viewModel()) {
                     ui = ui,
                     cast = castUi,
                     vm = vm,
-                    modifier = Modifier.align(Alignment.Center),
+                    modifier = Modifier.fillMaxSize(),
                 )
             } else {
                 AndroidView(
@@ -253,7 +256,7 @@ fun PlayerScreen(onBack: () -> Unit, model: PlayerViewModel = viewModel()) {
         }
 
         ui.startWait?.let { wait ->
-            if (ui.phase is PlayerPhase.Playing) {
+            if (ui.phase is PlayerPhase.Playing && castUi == null) {
                 StartWaitCard(
                     wait = wait,
                     stats = ui.stats,
@@ -275,7 +278,7 @@ fun PlayerScreen(onBack: () -> Unit, model: PlayerViewModel = viewModel()) {
             }
         }
         val nextLabel = ui.nextUp
-        if (nextLabel != null && (nearEnd || ui.nextCountdown != null || ui.nextLoading)) {
+        if (castUi == null && nextLabel != null && (nearEnd || ui.nextCountdown != null || ui.nextLoading)) {
             NextUpCard(
                 label = nextLabel,
                 countdown = ui.nextCountdown,
@@ -289,17 +292,25 @@ fun PlayerScreen(onBack: () -> Unit, model: PlayerViewModel = viewModel()) {
         }
 
         ui.castMessage?.let { message ->
-            Text(
-                text = message,
-                color = Color(0xFFFFC857),
-                style = MaterialTheme.typography.bodyMedium,
-                textAlign = TextAlign.Center,
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(start = 24.dp, end = 24.dp, bottom = 24.dp)
-                    .background(Color.Black.copy(alpha = 0.7f), RoundedCornerShape(8.dp))
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-            )
+            // Los avisos se van solos a los 15 s (o al tocarlos).
+            LaunchedEffect(message) {
+                delay(15_000)
+                vm.dismissMessage(message)
+            }
+            if (castUi == null) {
+                Text(
+                    text = message,
+                    color = Color(0xFFFFC857),
+                    style = MaterialTheme.typography.bodyMedium,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(start = 24.dp, end = 24.dp, bottom = 24.dp)
+                        .background(Color.Black.copy(alpha = 0.7f), RoundedCornerShape(8.dp))
+                        .clickable { vm.dismissMessage(message) }
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                )
+            }
         }
     }
 
@@ -387,7 +398,8 @@ private fun TracksSheet(ui: PlayerUi, vm: PlaybackSession, onDismiss: () -> Unit
             .distinct()
             .sortedWith(compareBy<String>({ it != pref }, { languageName(it, it) }))
     }
-    var langFilter by remember(langs) { mutableStateOf(langs.firstOrNull()) }
+    val chosenLang = ui.externalSubs.firstOrNull { it.id == ui.externalSelected }?.let { normalizeLang(it.lang) ?: it.lang }
+    var langFilter by remember(langs) { mutableStateOf(chosenLang?.takeIf { it in langs } ?: langs.firstOrNull()) }
 
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
         LazyColumn(contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 32.dp)) {
@@ -536,7 +548,8 @@ private fun StartWaitCard(
     val goal = (wait.targetMs / 1000).toInt()
     Column(
         modifier = modifier
-            .width(320.dp)
+            .widthIn(max = 360.dp)
+            .fillMaxWidth()
             .background(Color.Black.copy(alpha = 0.8f), RoundedCornerShape(12.dp))
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -644,12 +657,20 @@ private fun NoSession(onBack: () -> Unit) {
 @Composable
 private fun CastPanel(ui: PlayerUi, cast: CastUi, vm: PlaybackSession, modifier: Modifier) {
     var dragging by remember { mutableStateOf<Float?>(null) }
+    var nearEnd by remember(vm) { mutableStateOf(false) }
+    LaunchedEffect(vm, ui.nextUp) {
+        while (ui.nextUp != null) {
+            nearEnd = vm.nearEnd()
+            delay(1000)
+        }
+    }
+    // Se desplaza: con avisos largos (o el celular de lado) los botones no quedan fuera de la pantalla.
     Column(
         modifier = modifier
-            .fillMaxWidth()
-            .padding(24.dp),
+            .verticalScroll(rememberScrollState())
+            .padding(start = 24.dp, end = 24.dp, top = 72.dp, bottom = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(14.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterVertically),
     ) {
         Text(
             text = "Transmitiendo a ${cast.device}",
@@ -708,6 +729,9 @@ private fun CastPanel(ui: PlayerUi, cast: CastUi, vm: PlaybackSession, modifier:
                 OutlinedButton(onClick = vm::stopCasting) { Text("Ver en el celular", color = Color.White) }
             }
         }
+        ui.startWait?.let { wait ->
+            StartWaitCard(wait = wait, stats = ui.stats, casting = true, onStart = vm::startNow, modifier = Modifier)
+        }
         ui.converting?.let { status ->
             Text(
                 text = "⚙ $status",
@@ -723,7 +747,9 @@ private fun CastPanel(ui: PlayerUi, cast: CastUi, vm: PlaybackSession, modifier:
                 style = MaterialTheme.typography.bodySmall,
             )
         }
-        if (cast.durationMs > 0) {
+        // Sin nada cargado en el aparato (revisando, "No compatible"…) los controles no harían nada.
+        val controls = ui.castBlocked == null && ui.startWait == null
+        if (controls && cast.durationMs > 0) {
             Slider(
                 value = (dragging ?: cast.positionMs.toFloat()).coerceIn(0f, cast.durationMs.toFloat()),
                 onValueChange = { dragging = it },
@@ -740,16 +766,40 @@ private fun CastPanel(ui: PlayerUi, cast: CastUi, vm: PlaybackSession, modifier:
                 Text(formatTime(cast.durationMs), color = Color.White)
             }
         }
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            OutlinedButton(onClick = { vm.castSkip(-10_000) }) { Text("−10 s", color = Color.White) }
-            Button(onClick = vm::castTogglePlay) { Text(if (cast.playing) "Pausar" else "Reproducir") }
-            OutlinedButton(onClick = { vm.castSkip(30_000) }) { Text("+30 s", color = Color.White) }
+        if (controls) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OutlinedButton(onClick = { vm.castSkip(-10_000) }) { Text("−10 s", color = Color.White) }
+                Button(onClick = vm::castTogglePlay) { Text(if (cast.playing) "Pausar" else "Reproducir") }
+                OutlinedButton(onClick = { vm.castSkip(30_000) }) { Text("+30 s", color = Color.White) }
+            }
+        }
+        val nextLabel = ui.nextUp
+        if (nextLabel != null && (nearEnd || ui.nextCountdown != null || ui.nextLoading)) {
+            NextUpCard(
+                label = nextLabel,
+                countdown = ui.nextCountdown,
+                loading = ui.nextLoading,
+                onPlay = vm::playNext,
+                onCancel = vm::cancelNext,
+                modifier = Modifier,
+            )
+        }
+        ui.castMessage?.let { message ->
+            Text(
+                text = message,
+                color = Color(0xFFFFC857),
+                style = MaterialTheme.typography.bodyMedium,
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .clickable { vm.dismissMessage(message) }
+                    .padding(4.dp),
+            )
         }
         // Si se ve pero no se oye: la app aprende que ese audio no suena en este aparato.
-        if (ui.castBlocked == null && !ui.noSoundReported) {
+        if (controls && !ui.noSoundReported) {
             OutlinedButton(onClick = vm::reportNoSound) { Text("🔇 No tiene sonido", color = Color.White) }
         }
         TextButton(onClick = vm::stopCasting) {

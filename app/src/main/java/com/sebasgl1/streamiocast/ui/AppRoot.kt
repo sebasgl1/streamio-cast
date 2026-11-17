@@ -158,7 +158,7 @@ fun AppRoot() {
                     composable("home") {
                         HomeScreen(
                             onOpen = { nav.navigate(detailRoute(it)) },
-                            onResumePlayer = { nav.navigate("player") },
+                            onResumePlayer = { nav.navigate("player") { launchSingleTop = true } },
                         )
                     }
                     composable("search") {
@@ -191,7 +191,7 @@ fun AppRoot() {
                                 if (current == null || !current.isOpen || !current.request.sameStreamAs(request)) {
                                     app.pendingPlayback = request
                                 }
-                                nav.navigate("player")
+                                nav.navigate("player") { launchSingleTop = true }
                             },
                         )
                     }
@@ -208,7 +208,7 @@ fun AppRoot() {
     val openRequests by app.openPlayerRequests.collectAsState()
     LaunchedEffect(openRequests) {
         if (app.session?.isOpen == true && nav.currentDestination?.route != "player") {
-            nav.navigate("player")
+            nav.navigate("player") { launchSingleTop = true }
         }
     }
 }
