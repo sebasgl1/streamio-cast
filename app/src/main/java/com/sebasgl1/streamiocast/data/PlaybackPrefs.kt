@@ -36,6 +36,15 @@ class PlaybackPrefs(context: Context) {
         get() = prefs.getString("streamFilter", "CHROMECAST") ?: "CHROMECAST"
         set(value) = prefs.edit().putString("streamFilter", value).apply()
 
+    /** Último orden de la lista de streams (nombre de StreamSort) y su sentido. */
+    var streamSort: String
+        get() = prefs.getString("streamSort", "RECOMMENDED") ?: "RECOMMENDED"
+        set(value) = prefs.edit().putString("streamSort", value).apply()
+
+    var streamSortDescending: Boolean
+        get() = prefs.getBoolean("streamSortDesc", true)
+        set(value) = prefs.edit().putBoolean("streamSortDesc", value).apply()
+
     companion object {
         const val ORIGINAL = "original"
         const val OFF = "off"

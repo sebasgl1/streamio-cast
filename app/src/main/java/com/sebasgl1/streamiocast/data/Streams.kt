@@ -90,3 +90,60 @@ fun streamComparator(filter: StreamFilter): Comparator<StreamResult> {
         .thenByDescending { min(it.info.resolution ?: 0, cap) }
         .thenByDescending { it.info.seeders ?: 0 }
 }
+
+// --- Ordenar la lista ---------------------------------------------------------------------
+
+/** Cómo ordenar la lista de streams. */
+enum class StreamSort(val label: String, val defaultDescending: Boolean) {
+    /** Compatibles primero, luego calidad y seeds (lo de siempre). */
+    RECOMMENDED("Recomendado", true),
+    SEEDS("Seeds", true),
+    RESOLUTION("Resolución", true),
+    SIZE("Peso", false),
+}
+
+/**
+ * Filtra por aparato y ordena. Con un aparato elegido (Chromecast o TV) se quitan los que no le
+ * sirven y, dentro de lo que queda, primero los compatibles seguros (verde) y después los dudosos
+ * (amarillo), cada grupo ordenado por el criterio elegido. Con "Todos" el orden es solo el criterio.
+ * Los que no traen el dato (sin seeds, sin resolución, sin peso) van siempre al final.
+ */
+fun arrangeStreams(
+    results: List<StreamResult>,
+    filter: StreamFilter,
+    sort: StreamSort,
+    descending: Boolean,
+): List<StreamResult> {
+    val shown = if (filter == StreamFilter.ALL) results else results.filter { it.verdictFor(filter) != Verdict.BAD }
+    if (sort == StreamSort.RECOMMENDED) return shown.sortedWith(streamComparator(filter))
+
+    val key: (StreamResult) -> Long? = when (sort) {
+        StreamSort.SEEDS -> { r -> r.info.seeders?.toLong() }
+        StreamSort.RESOLUTION -> { r -> r.info.resolution?.toLong() }
+        StreamSort.SIZE -> { r -> r.info.sizeBytes }
+        StreamSort.RECOMMENDED -> { _ -> null }
+    }
+    // Desempate: por seeds (o, si se ordena por seeds, por resolución), siempre de mayor a menor.
+    val tieBreak: (StreamResult) -> Long = when (sort) {
+        StreamSort.SEEDS -> { r -> r.info.resolution?.toLong() ?: -1 }
+        else -> { r -> r.info.seeders?.toLong() ?: -1 }
+    }
+    val byKey = Comparator<StreamResult> { a, b ->
+        val ka = key(a)
+        val kb = key(b)
+        when {
+            ka == null && kb == null -> 0
+            ka == null -> 1 // sin dato, al final
+            kb == null -> -1
+            descending -> kb.compareTo(ka)
+            else -> ka.compareTo(kb)
+        }
+    }.thenByDescending(tieBreak)
+
+    val comparator = if (filter == StreamFilter.ALL) {
+        byKey
+    } else {
+        compareBy<StreamResult> { it.verdictFor(filter).ordinal }.then(byKey)
+    }
+    return shown.sortedWith(comparator)
+}

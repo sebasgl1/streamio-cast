@@ -68,8 +68,8 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.runtime.LaunchedEffect
 import com.sebasgl1.streamiocast.data.StreamFilter
 import com.sebasgl1.streamiocast.data.StreamResult
-import com.sebasgl1.streamiocast.data.streamComparator
-import com.sebasgl1.streamiocast.data.verdictFor
+import com.sebasgl1.streamiocast.data.StreamSort
+import com.sebasgl1.streamiocast.data.arrangeStreams
 import com.sebasgl1.streamiocast.data.Verdict
 import com.sebasgl1.streamiocast.data.VideoCodec
 import com.sebasgl1.streamiocast.data.resolutionLabel
@@ -138,6 +138,10 @@ fun StreamsScreen(
     var filter by rememberSaveable {
         mutableStateOf(runCatching { StreamFilter.valueOf(prefs.streamFilter) }.getOrDefault(StreamFilter.CHROMECAST))
     }
+    var sort by rememberSaveable {
+        mutableStateOf(runCatching { StreamSort.valueOf(prefs.streamSort) }.getOrDefault(StreamSort.RECOMMENDED))
+    }
+    var descending by rememberSaveable { mutableStateOf(prefs.streamSortDescending) }
     var selected by remember { mutableStateOf<StreamResult?>(null) }
 
     // Al elegir (o cambiar) el aparato, la lista se filtra sola para él.
@@ -160,14 +164,9 @@ fun StreamsScreen(
     val castLabel = castDevice?.name ?: "Chromecast"
     val tvLabel = tvDevice?.name ?: "TV"
 
-    val visible = remember(results, filter) {
-        val list = if (filter == StreamFilter.ALL) {
-            results
-        } else {
-            results.filter { it.verdictFor(filter) != Verdict.BAD }
-        }
-        list.sortedWith(streamComparator(filter))
-    }
+    // Los dos van juntos: primero el filtro del aparato, luego el orden (Chromecast + Seeds = el de
+    // más seeds que sirve en el Chromecast arriba).
+    val visible = remember(results, filter, sort, descending) { arrangeStreams(results, filter, sort, descending) }
     val ccCount = results.count { it.cls.verdict != Verdict.BAD }
     val tvCount = results.count { it.tv.verdict != Verdict.BAD }
 
@@ -215,6 +214,43 @@ fun StreamsScreen(
                         prefs.streamFilter = f.name
                     },
                     label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                )
+            }
+        }
+
+        // Orden: tocar el criterio activo invierte el sentido (↓ mayor primero, ↑ menor primero).
+        LazyRow(
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            item {
+                Text(
+                    "Ordenar",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            items(StreamSort.entries) { option ->
+                val active = sort == option
+                val arrow = when {
+                    option == StreamSort.RECOMMENDED -> ""
+                    active -> if (descending) " ↓" else " ↑"
+                    else -> if (option.defaultDescending) " ↓" else " ↑"
+                }
+                FilterChip(
+                    selected = active,
+                    onClick = {
+                        if (active && option != StreamSort.RECOMMENDED) {
+                            descending = !descending
+                        } else {
+                            sort = option
+                            descending = option.defaultDescending
+                        }
+                        prefs.streamSort = sort.name
+                        prefs.streamSortDescending = descending
+                    },
+                    label = { Text(option.label + arrow, maxLines = 1) },
                 )
             }
         }
