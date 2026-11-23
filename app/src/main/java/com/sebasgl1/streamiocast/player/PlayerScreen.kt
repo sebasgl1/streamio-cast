@@ -417,7 +417,8 @@ private fun TracksSheet(ui: PlayerUi, vm: PlaybackSession, onDismiss: () -> Unit
                 item { Hint("En el televisor suena la que elijas aquí: si no es la primera del archivo, la app la manda desde el celular.") }
             }
             items(ui.audioTracks) { track ->
-                val label = if (track.supported) track.label else "${track.label} · no compatible con este celular"
+                // Transmitiendo no importa si el celular lo decodifica: lo reproduce el televisor.
+                val label = if (track.supported || ui.cast != null) track.label else "${track.label} · no compatible con este celular"
                 OptionRow(label, track.selected) { vm.selectAudio(track.id) }
             }
 
@@ -429,7 +430,8 @@ private fun TracksSheet(ui: PlayerUi, vm: PlaybackSession, onDismiss: () -> Unit
                 ) { vm.disableSubtitles() }
             }
             items(ui.textTracks) { track ->
-                val where = if (ui.cast != null) " · del archivo, solo en el celular" else " · del archivo"
+                val where = (if (track.forced) " · forzados" else "") +
+                    if (ui.cast != null) " · del archivo, solo en el celular" else " · del archivo"
                 OptionRow(track.label + where, track.selected) { vm.selectEmbeddedText(track.id) }
             }
 
@@ -480,18 +482,31 @@ private fun TracksSheet(ui: PlayerUi, vm: PlaybackSession, onDismiss: () -> Unit
 
             item { SectionTitle("Ajustes de subtítulos") }
             item {
+                val canShift = ui.externalSelected != null
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Retraso", modifier = Modifier.weight(1f))
-                    OutlinedButton(onClick = { vm.shiftSubtitles(-500) }) { Text("−0,5 s") }
+                    Text(
+                        "Retraso",
+                        modifier = Modifier.weight(1f),
+                        color = if (canShift) Color.Unspecified else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    OutlinedButton(onClick = { vm.shiftSubtitles(-500) }, enabled = canShift) { Text("−0,5 s") }
                     Text(
                         text = formatOffset(ui.subtitleOffsetMs),
                         textAlign = TextAlign.Center,
                         modifier = Modifier.width(72.dp),
                     )
-                    OutlinedButton(onClick = { vm.shiftSubtitles(500) }) { Text("+0,5 s") }
+                    OutlinedButton(onClick = { vm.shiftSubtitles(500) }, enabled = canShift) { Text("+0,5 s") }
                 }
             }
-            item { Hint("Si el subtítulo sale antes que la voz, súmale retraso. Aplica a los subtítulos externos.") }
+            item {
+                Hint(
+                    if (ui.externalSelected != null) {
+                        "Si el subtítulo sale antes que la voz, súmale retraso."
+                    } else {
+                        "El retraso solo se puede ajustar en los subtítulos de internet (los del archivo ya vienen sincronizados)."
+                    },
+                )
+            }
             item {
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),

@@ -93,3 +93,16 @@ class SubtitleTextTest {
         assertTrue(languageName(null, "Klingon") == "Klingon")
     }
 }
+
+class GzipSubtitleTest {
+    @org.junit.Test
+    fun gzippedSrtIsDecoded() {
+        val srt = "1\n00:00:01,000 --> 00:00:02,000\nHola\n"
+        val out = java.io.ByteArrayOutputStream()
+        java.util.zip.GZIPOutputStream(out).use { it.write(srt.toByteArray()) }
+        val cues = com.sebasgl1.streamiocast.subtitles.parseSubtitles(
+            com.sebasgl1.streamiocast.subtitles.decodeSubtitleBytes(out.toByteArray()),
+        )
+        org.junit.Assert.assertEquals("Hola", cues.single().text)
+    }
+}

@@ -720,6 +720,8 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
         subtitleJob?.cancel()
         subtitleJob = scope.launch {
             _ui.update { it.copy(subtitleError = null) }
+            // Otro subtítulo trae su propia sincronía: el retraso del anterior no le sirve.
+            if (record && sub.id != _ui.value.externalSelected) _ui.update { it.copy(subtitleOffsetMs = 0) }
             val loaded = try {
                 app.subtitles.load(sub)
             } catch (e: CancellationException) {
@@ -736,7 +738,7 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
             player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
                 .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
                 .build()
-            _ui.update { it.copy(externalSelected = sub.id) }
+            _ui.update { s -> s.copy(externalSelected = sub.id, textTracks = s.textTracks.map { it.copy(selected = false) }) }
             if (record) {
                 history.update(target) {
                     it.copy(
@@ -749,8 +751,9 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
                     )
                 }
             }
-            // En el televisor los subtítulos van dentro de la carga: se recarga donde iba.
-            if (remote != null) sendToCast(remotePos())
+            // En el televisor los subtítulos van dentro de la carga: se recarga donde iba. (Si aún
+            // no se mandó nada, irán en el primer envío; no se adelanta la espera del buffer.)
+            if (remote != null && remoteLoaded) sendToCast(remotePos())
         }
     }
 
@@ -763,6 +766,8 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
     }
 
     fun shiftSubtitles(deltaMs: Long) {
+        // Los del archivo los dibuja el reproductor con sus propios tiempos: el retraso no les aplica.
+        if (_ui.value.externalSelected == null) return
         _ui.update { it.copy(subtitleOffsetMs = it.subtitleOffsetMs + deltaMs) }
         val offset = _ui.value.subtitleOffsetMs
         history.update(target) { e -> e.copy(subtitle = e.subtitle?.copy(offsetMs = offset)) }
@@ -809,6 +814,7 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
                             lang = normalizeLang(format.language),
                             selected = group.isTrackSelected(i),
                             supported = group.isTrackSupported(i),
+                            forced = format.selectionFlags and C.SELECTION_FLAG_FORCED != 0,
                         ),
                     )
                 }
@@ -828,12 +834,13 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
             .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
             .setOverrideForType(TrackSelectionOverride(group, index))
             .build()
+        // Lo que se manda al TV: la pista elegida, aunque la haya puesto la app (idioma guardado).
+        userAudioIndex = _ui.value.audioTracks.indexOfFirst { it.id == id }.takeIf { it >= 0 }
+        // Las pistas en pantalla no se actualizan con el celular detenido: se marca a mano.
+        _ui.update { s -> s.copy(audioTracks = s.audioTracks.map { it.copy(selected = it.id == id) }) }
         if (record) {
             val lang = _ui.value.audioTracks.firstOrNull { it.id == id }?.lang
             history.update(target) { it.copy(audioLang = lang) }
-            userAudioIndex = _ui.value.audioTracks.indexOfFirst { it.id == id }.takeIf { it >= 0 }
-            // Las pistas en pantalla no se actualizan con el celular detenido: se marca a mano.
-            _ui.update { s -> s.copy(audioTracks = s.audioTracks.map { it.copy(selected = it.id == id) }) }
             if (remote != null) audioChangedWhileCasting()
         }
     }
@@ -843,6 +850,12 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
      * archivo, así que para oír otra hay que mandarla desde el celular (o reconvertir).
      */
     private fun audioChangedWhileCasting() {
+        if (!remoteLoaded) {
+            // Aún no se mandó: el envío usará la pista nueva. Si estaba el aviso de "no compatible",
+            // se vuelve a revisar con esta pista (puede que esta sí sirva).
+            if (_ui.value.castBlocked != null) sendToCast(remotePos())
+            return
+        }
         val toTv = remote === dlna
         val plan = buildConvertPlan(toTv)
         when {
@@ -879,7 +892,7 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
         clearExternal()
         remote?.let { r ->
             r.hideSubtitles()
-            if (r === dlna) sendToCast(remotePos())
+            if (r === dlna && remoteLoaded) sendToCast(remotePos())
             _ui.update {
                 it.copy(
                     castMessage = "Los subtítulos que vienen dentro del archivo solo se ven en el celular: el " +
@@ -905,7 +918,7 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
         clearExternal()
         remote?.let { r ->
             r.hideSubtitles()
-            if (r === dlna) sendToCast(remotePos()) // el TV DLNA solo los quita recargando
+            if (r === dlna && remoteLoaded) sendToCast(remotePos()) // el TV DLNA solo los quita recargando
         }
         player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
             .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
@@ -953,7 +966,14 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
         if (pref == PlaybackPrefs.OFF) return
         if (state.textTracks.any { it.selected } || state.externalSelected != null) return
         val audioLang = state.audioTracks.firstOrNull { it.selected }?.lang
-        if (audioLang == pref) return
+        if (audioLang == pref) {
+            // Audio en tu idioma: solo los "forzados" del archivo (partes en otro idioma), si los trae.
+            if (prefs.onlineSubtitlesFirst && remote == null) {
+                state.textTracks.firstOrNull { it.forced && (it.lang == pref || it.lang == null) }
+                    ?.let { selectEmbeddedText(it.id, record = false) }
+            }
+            return
+        }
         val sub = state.externalSubs.firstOrNull { normalizeLang(it.lang) == pref }
         if (sub != null) {
             selectExternal(sub, record = false)
@@ -1210,6 +1230,20 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
         return formats.firstOrNull { it.selectionFlags and C.SELECTION_FLAG_DEFAULT != 0 } ?: formats.firstOrNull()
     }
 
+    /** La pista de audio elegida (en la app o por idioma), contada entre las de audio del archivo. */
+    private fun sentAudioIndex(): Int? {
+        userAudioIndex?.let { return it }
+        var index = 0
+        for (group in lastTracks?.groups.orEmpty()) {
+            if (group.type != C.TRACK_TYPE_AUDIO) continue
+            for (i in 0 until group.length) {
+                if (group.isTrackSelected(i)) return index
+                index++
+            }
+        }
+        return null
+    }
+
     /** La pista de audio número [index] (entre las de audio) del archivo. */
     private fun audioFormatAt(index: Int): Format? = lastTracks?.groups.orEmpty()
         .filter { it.type == C.TRACK_TYPE_AUDIO }
@@ -1221,7 +1255,8 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
         if (!tracksKnown.isCompleted) withTimeoutOrNull(20_000) { tracksKnown.await() }
         val tracks = lastTracks ?: return null
         val facts = videoFacts(tracks)
-        val audio = remoteAudioFormat(tracks)?.sampleMimeType
+        // Se revisa la pista que de verdad se va a mandar (la elegida), no siempre la primera.
+        val audio = (sentAudioIndex()?.let { audioFormatAt(it) } ?: remoteAudioFormat(tracks))?.sampleMimeType
         return if (toTv) checkTvCompat(facts, audio, tvProfile()) else checkCastCompat(facts, audio, castProfile())
     }
 

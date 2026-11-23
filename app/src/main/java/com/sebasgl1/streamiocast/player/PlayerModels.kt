@@ -69,6 +69,8 @@ data class TrackOption(
     val lang: String?,
     val selected: Boolean,
     val supported: Boolean,
+    /** Subtítulo "forzado": solo las partes habladas en otro idioma. */
+    val forced: Boolean = false,
 )
 
 data class PlayerUi(

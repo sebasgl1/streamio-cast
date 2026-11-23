@@ -113,7 +113,13 @@ fun toSrt(cues: List<SubCue>, offsetMs: Long = 0): String = buildString {
  * Muchos subtítulos en español vienen en Windows-1252 en vez de UTF-8 (salen tildes rotas).
  * Si el archivo no es UTF-8 válido, se lee como Windows-1252.
  */
-fun decodeSubtitleBytes(bytes: ByteArray): String {
+fun decodeSubtitleBytes(raw: ByteArray): String {
+    // Algunos addons entregan el .srt comprimido (.gz).
+    val bytes = if (raw.size >= 2 && raw[0] == 0x1F.toByte() && raw[1] == 0x8B.toByte()) {
+        runCatching { java.util.zip.GZIPInputStream(raw.inputStream()).use { it.readBytes() } }.getOrDefault(raw)
+    } else {
+        raw
+    }
     if (bytes.size >= 2 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xFE.toByte()) {
         return String(bytes, Charsets.UTF_16LE).removePrefix("﻿")
     }
