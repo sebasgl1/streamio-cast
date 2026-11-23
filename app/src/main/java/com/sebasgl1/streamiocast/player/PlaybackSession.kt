@@ -306,6 +306,9 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
                     lastTracks = tracks
                     tracksKnown.complete(Unit)
                 }
+                // Al transmitir, el reproductor del celular se detiene y se queda sin pistas: se
+                // conservan las del archivo para poder seguir eligiendo audio y subtítulos.
+                if (tracks.groups.isEmpty() && remote != null) return
                 refreshTracks(tracks)
                 applySavedAudio()
                 maybeAutoSelectSubtitles()
@@ -848,6 +851,11 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
                 if (plan == null) _ui.update { it.copy(converting = null) }
                 sendToCast(at)
             }
+            plan != null && plan.video == VideoTarget.COPY -> {
+                // Solo cambia la pista (y como mucho se convierte el audio): se hace de una.
+                convertPlan = plan
+                sendToCast(remotePos())
+            }
             plan != null && remoteLoaded -> {
                 offeredPlan = plan
                 val device = app.selectedDevice.value?.name ?: "el televisor"
@@ -871,13 +879,18 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
             r.hideSubtitles()
             if (r === dlna) sendToCast(remotePos())
             _ui.update {
-                it.copy(castMessage = "Los subtítulos internos del archivo no se pueden transmitir. Elige uno externo.")
+                it.copy(
+                    castMessage = "Los subtítulos que vienen dentro del archivo solo se ven en el celular: el " +
+                        "televisor no los recibe. Para verlos en el TV elige uno de los de internet (abajo en la lista).",
+                )
             }
         }
         player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
             .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
             .setOverrideForType(TrackSelectionOverride(group, index))
             .build()
+        // Con el celular detenido (transmitiendo) la lista no se actualiza sola.
+        _ui.update { s -> s.copy(textTracks = s.textTracks.map { it.copy(selected = it.id == id) }) }
         if (record) {
             val lang = _ui.value.textTracks.firstOrNull { it.id == id }?.lang
             history.update(target) { it.copy(subtitle = SavedSubtitle(SavedSubtitle.EMBEDDED, lang)) }
@@ -895,6 +908,7 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
         player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
             .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
             .build()
+        _ui.update { s -> s.copy(textTracks = s.textTracks.map { it.copy(selected = false) }) }
         if (record) history.update(target) { it.copy(subtitle = SavedSubtitle(SavedSubtitle.OFF)) }
     }
 
@@ -1300,6 +1314,14 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
                     val ok = report != null && warning == null
                     val name = app.selectedDevice.value?.name ?: "el televisor"
                     _ui.update { it.copy(compatOk = if (ok) "Formato revisado: vídeo y audio compatibles con $name" else null) }
+                    // El aparato reproduce por su cuenta la primera pista de audio del archivo. Si en
+                    // la app está elegida otra (por tu idioma o porque la cambiaste), se manda esa:
+                    // solo se reempaqueta el archivo, el vídeo no se toca.
+                    val trackPlan = buildConvertPlan(toTv)?.takeIf { it.video == VideoTarget.COPY && it.audioIsOtherTrack }
+                    if (trackPlan != null) {
+                        convertPlan = trackPlan
+                        warning = listOfNotNull(trackPlan.describe(name), warning).joinToString("\n")
+                    }
                 }
             } else {
                 _ui.update { it.copy(compatOk = null) }

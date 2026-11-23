@@ -413,6 +413,8 @@ private fun TracksSheet(ui: PlayerUi, vm: PlaybackSession, onDismiss: () -> Unit
             item { SectionTitle("Audio") }
             if (ui.audioTracks.isEmpty()) {
                 item { Hint("Este vídeo no trae varias pistas de audio.") }
+            } else if (ui.cast != null && ui.audioTracks.size > 1) {
+                item { Hint("En el televisor suena la que elijas aquí: si no es la primera del archivo, la app la manda desde el celular.") }
             }
             items(ui.audioTracks) { track ->
                 val label = if (track.supported) track.label else "${track.label} · no compatible con este celular"
@@ -427,7 +429,8 @@ private fun TracksSheet(ui: PlayerUi, vm: PlaybackSession, onDismiss: () -> Unit
                 ) { vm.disableSubtitles() }
             }
             items(ui.textTracks) { track ->
-                OptionRow("${track.label} · del archivo", track.selected) { vm.selectEmbeddedText(track.id) }
+                val where = if (ui.cast != null) " · del archivo, solo en el celular" else " · del archivo"
+                OptionRow(track.label + where, track.selected) { vm.selectEmbeddedText(track.id) }
             }
 
             if (ui.subsLoading) {
