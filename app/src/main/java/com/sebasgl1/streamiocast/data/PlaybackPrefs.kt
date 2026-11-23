@@ -21,6 +21,14 @@ class PlaybackPrefs(context: Context) {
         get() = prefs.getInt("subsSize", 1)
         set(value) = prefs.edit().putInt("subsSize", value).apply()
 
+    /**
+     * Subtítulos de internet primero: se usan aunque el archivo traiga los suyos (que no se pueden
+     * transmitir al TV). Los del archivo quedan de respaldo si en internet no hay de tu idioma.
+     */
+    var onlineSubtitlesFirst: Boolean
+        get() = prefs.getBoolean("onlineSubsFirst", true)
+        set(value) = prefs.edit().putBoolean("onlineSubsFirst", value).apply()
+
     /** Cómo arranca el vídeo: [START_AUTO], [START_BUFFER] o [START_MANUAL]. */
     var startMode: Int
         get() = prefs.getInt("startMode", START_BUFFER)

@@ -271,7 +271,9 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
         // Idiomas preferidos para las pistas que vienen dentro del archivo.
         player.trackSelectionParameters = player.trackSelectionParameters.buildUpon().apply {
             if (prefs.audioLang != PlaybackPrefs.ORIGINAL) setPreferredAudioLanguage(prefs.audioLang)
-            if (prefs.subtitleLang == PlaybackPrefs.OFF) {
+            if (prefs.subtitleLang == PlaybackPrefs.OFF || prefs.onlineSubtitlesFirst) {
+                // Con "internet primero" los del archivo no se activan solos: se decide al tener
+                // la lista de internet (y quedan de respaldo).
                 setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
             } else {
                 setPreferredTextLanguage(prefs.subtitleLang)
@@ -952,8 +954,15 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
         if (state.textTracks.any { it.selected } || state.externalSelected != null) return
         val audioLang = state.audioTracks.firstOrNull { it.selected }?.lang
         if (audioLang == pref) return
-        val sub = state.externalSubs.firstOrNull { normalizeLang(it.lang) == pref } ?: return
-        selectExternal(sub, record = false)
+        val sub = state.externalSubs.firstOrNull { normalizeLang(it.lang) == pref }
+        if (sub != null) {
+            selectExternal(sub, record = false)
+            return
+        }
+        // En internet no hay de tu idioma: los del archivo de respaldo (solo se ven en el celular).
+        if (prefs.onlineSubtitlesFirst) {
+            state.textTracks.firstOrNull { it.lang == pref }?.let { selectEmbeddedText(it.id, record = false) }
+        }
     }
 
     private fun applySavedSubtitle(saved: SavedSubtitle, state: PlayerUi) {
@@ -961,7 +970,9 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
             SavedSubtitle.OFF -> disableSubtitles(record = false)
 
             SavedSubtitle.EMBEDDED -> {
+                // Transmitiendo, los del archivo no llegan al TV: mejor uno de internet del mismo idioma.
                 val track = state.textTracks.firstOrNull { it.lang == saved.lang }
+                    ?.takeIf { remote == null || state.externalSubs.none { s -> normalizeLang(s.lang) == saved.lang } }
                 if (track != null) {
                     selectEmbeddedText(track.id, record = false)
                 } else {

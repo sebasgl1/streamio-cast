@@ -2,6 +2,10 @@
 
 package com.sebasgl1.streamiocast.ui
 
+import androidx.compose.ui.Alignment
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.Row
+import androidx.compose.material3.Switch
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
@@ -42,6 +46,7 @@ fun LanguagePrefs() {
     val prefs = (LocalContext.current.applicationContext as StremioApp).playbackPrefs
     var audio by remember { mutableStateOf(prefs.audioLang) }
     var subs by remember { mutableStateOf(prefs.subtitleLang) }
+    var onlineFirst by remember { mutableStateOf(prefs.onlineSubtitlesFirst) }
 
     Column(
         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -57,6 +62,26 @@ fun LanguagePrefs() {
         ChipRow(SUBTITLE_OPTIONS, subs) {
             subs = it
             prefs.subtitleLang = it
+        }
+        if (subs != PlaybackPrefs.OFF) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.weight(1f)) {
+                    Text("Preferir subtítulos de internet", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        text = "Aunque el archivo traiga los suyos. Los de internet sí llegan al TV y al " +
+                            "Chromecast; los del archivo quedan de respaldo.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = onlineFirst,
+                    onCheckedChange = {
+                        onlineFirst = it
+                        prefs.onlineSubtitlesFirst = it
+                    },
+                )
+            }
         }
         Text(
             text = "Los subtítulos se activan solos cuando el audio no está en ese idioma. " +
