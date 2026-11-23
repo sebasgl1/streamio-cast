@@ -116,7 +116,7 @@ fun PlayerScreen(onBack: () -> Unit, model: PlayerViewModel = viewModel()) {
     var controlsVisible by remember { mutableStateOf(true) }
     var menuOpen by remember { mutableStateOf(false) }
     val castUi = ui.cast
-    ImmersiveMode()
+    ImmersiveMode(enabled = castUi == null)
 
     // Android 13+: permiso para la notificación que mantiene viva la descarga.
     val context = LocalContext.current
@@ -863,13 +863,13 @@ private fun formatRate(bytesPerSecond: Long): String = when {
 
 /** Pantalla completa mientras se ve el vídeo; al salir vuelven las barras del sistema. */
 @Composable
-private fun ImmersiveMode() {
+private fun ImmersiveMode(enabled: Boolean) {
     val view = LocalView.current
-    DisposableEffect(Unit) {
+    DisposableEffect(enabled) {
         val window = (view.context as? Activity)?.window
         val controller = window?.let { WindowCompat.getInsetsController(it, view) }
         controller?.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        controller?.hide(WindowInsetsCompat.Type.systemBars())
+        if (enabled) controller?.hide(WindowInsetsCompat.Type.systemBars()) else controller?.show(WindowInsetsCompat.Type.systemBars())
         onDispose { controller?.show(WindowInsetsCompat.Type.systemBars()) }
     }
 }

@@ -69,7 +69,10 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
 
     fun refresh() = run("Addons sincronizados") { repo.refreshAddons() }
 
-    fun addAddon(url: String) = run("Addon añadido") { repo.addAddon(url) }
+    fun addAddon(url: String, onAdded: () -> Unit) = run("Addon añadido") {
+        repo.addAddon(url)
+        onAdded()
+    }
 
     fun logout() {
         repo.logout()
@@ -222,10 +225,8 @@ fun SettingsScreen(vm: SettingsViewModel = viewModel()) {
         }
         item {
             Button(
-                onClick = {
-                    vm.addAddon(addonUrl)
-                    addonUrl = ""
-                },
+                // Se borra solo si se añadió: si falla, puedes corregir la URL sin volver a pegarla.
+                onClick = { vm.addAddon(addonUrl.trim()) { addonUrl = "" } },
                 enabled = !ui.busy && addonUrl.isNotBlank(),
             ) { Text("Añadir addon") }
         }

@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -154,6 +155,24 @@ fun HomeScreen(
                             },
                             onRemove = { app.history.hideMeta(it) },
                         )
+                    }
+                }
+                if (state.rows.isEmpty() && !state.loading && state.error != null) {
+                    item(key = "error") {
+                        Column(
+                            modifier = Modifier.padding(horizontal = 16.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text(state.error.orEmpty(), color = MaterialTheme.colorScheme.error)
+                            Button(onClick = vm::retry) { Text("Reintentar") }
+                        }
+                    }
+                }
+                if (state.loading && state.rows.isEmpty()) {
+                    item(key = "cargando") {
+                        Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator()
+                        }
                     }
                 }
                 items(state.rows, key = { it.order }) { row ->

@@ -58,6 +58,8 @@ data class SearchState(
     val query: String = "",
     val sections: List<SearchSection> = emptyList(),
     val searched: Boolean = false,
+    /** No nulo si no se pudo buscar (sin addons de búsqueda o todos fallaron). */
+    val problem: String? = null,
 )
 
 class SearchViewModel(app: Application) : AndroidViewModel(app) {
@@ -81,11 +83,24 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
                 .filter { it.manifest.hasResource("catalog") }
                 .flatMap { addon -> addon.manifest.catalogs.filter { it.supportsSearch }.map { addon to it } }
 
-            val results = coroutineScope {
+            if (targets.isEmpty()) {
+                _state.value = SearchState(
+                    query = q,
+                    searched = true,
+                    problem = "Ningún addon instalado permite buscar. Cinemeta sí: añádelo en Ajustes.",
+                )
+                return@launch
+            }
+            val answers = coroutineScope {
                 targets.map { (addon, catalog) ->
-                    async { runCatching { repo.fetchCatalog(addon, catalog, q) }.getOrDefault(emptyList()) }
+                    async { runCatching { repo.fetchCatalog(addon, catalog, q) } }
                 }.awaitAll()
-            }.flatten()
+            }
+            if (answers.all { it.isFailure }) {
+                _state.value = SearchState(query = q, searched = true, problem = "No se pudo buscar. Revisa tu conexión.")
+                return@launch
+            }
+            val results = answers.flatMap { it.getOrDefault(emptyList()) }
 
             ensureActive()
             val sections = results
@@ -135,8 +150,11 @@ fun SearchScreen(onOpen: (MetaItem) -> Unit, vm: SearchViewModel = viewModel()) 
                 state.loading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
 
                 state.searched && state.sections.isEmpty() -> Text(
-                    text = "Sin resultados para “${state.query}”",
-                    modifier = Modifier.align(Alignment.Center),
+                    text = state.problem ?: "Sin resultados para “${state.query}”",
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(32.dp),
                 )
 
                 else -> LazyVerticalGrid(

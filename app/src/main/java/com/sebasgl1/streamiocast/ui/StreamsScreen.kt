@@ -146,13 +146,15 @@ fun StreamsScreen(
     var descending by rememberSaveable { mutableStateOf(prefs.streamSortDescending) }
     var selected by remember { mutableStateOf<StreamResult?>(null) }
 
-    // Al elegir (o cambiar) el aparato, la lista se filtra sola para él.
+    // Al elegir (o cambiar) el aparato, la lista se filtra sola para él. Solo cuando cambia: al
+    // volver del reproductor se respeta el filtro que habías puesto (por ejemplo "Todos").
+    var appliedDevice by rememberSaveable { mutableStateOf<String?>(null) }
     LaunchedEffect(device?.key) {
-        when (device) {
-            is TargetDevice.Chromecast -> filter = StreamFilter.CHROMECAST
-            is TargetDevice.Tv -> filter = StreamFilter.TV
-            null -> Unit
+        val key = device?.key
+        if (key != null && key != appliedDevice) {
+            filter = if (device is TargetDevice.Tv) StreamFilter.TV else StreamFilter.CHROMECAST
         }
+        appliedDevice = key
     }
 
     // Colores según el aparato real (marca, año, modelo) y lo aprendido con "No tiene sonido".
@@ -199,9 +201,13 @@ fun StreamsScreen(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    text = device?.let { "Filtrados para ${it.name}" } ?: "Streams de tus addons",
+                    text = when (filter) {
+                        StreamFilter.ALL -> "Todos los streams de tus addons"
+                        StreamFilter.CHROMECAST -> "Los que sirven en $castLabel"
+                        StreamFilter.TV -> "Los que sirven en $tvLabel"
+                    },
                     style = MaterialTheme.typography.bodySmall,
-                    color = if (device != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = if (filter != StreamFilter.ALL) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             TransmitPill(modifier = Modifier.padding(end = 4.dp))

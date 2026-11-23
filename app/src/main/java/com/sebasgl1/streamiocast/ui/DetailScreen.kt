@@ -373,10 +373,12 @@ private fun EpisodeRow(video: Video, entry: WatchEntry?, onClick: () -> Unit) {
                 overflow = TextOverflow.Ellipsis,
             )
             video.released?.take(10)?.let { date ->
+                // Aún no sale: no tendrá streams.
+                val upcoming = runCatching { java.time.LocalDate.parse(date).isAfter(java.time.LocalDate.now()) }.getOrDefault(false)
                 Text(
-                    text = date,
+                    text = if (upcoming) "Se estrena el $date" else date,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = if (upcoming) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             WatchProgress(entry, Modifier.padding(top = 4.dp))

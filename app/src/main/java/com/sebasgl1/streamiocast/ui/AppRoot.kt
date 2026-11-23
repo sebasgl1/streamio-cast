@@ -86,6 +86,11 @@ fun AppRoot() {
             crashReport = null
         }
     }
+    // El último vídeo reproducido (cambia solo al pasar al siguiente episodio).
+    var lastPlayed by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) {
+        app.sessionFlow.collect { s -> if (s != null) lastPlayed = s.request.target.videoId }
+    }
     val entry by nav.currentBackStackEntryAsState()
     val route = entry?.destination?.route
     val showNavigation = destinations.any { it.route == route }
@@ -157,12 +162,12 @@ fun AppRoot() {
                 ) {
                     composable("home") {
                         HomeScreen(
-                            onOpen = { nav.navigate(detailRoute(it)) },
+                            onOpen = { nav.navigate(detailRoute(it)) { launchSingleTop = true } },
                             onResumePlayer = { nav.navigate("player") { launchSingleTop = true } },
                         )
                     }
                     composable("search") {
-                        SearchScreen(onOpen = { nav.navigate(detailRoute(it)) })
+                        SearchScreen(onOpen = { nav.navigate(detailRoute(it)) { launchSingleTop = true } })
                     }
                     composable("settings") {
                         SettingsScreen()
@@ -176,7 +181,7 @@ fun AppRoot() {
                     ) {
                         DetailScreen(
                             onBack = { nav.popBackStack() },
-                            onStreams = { target -> nav.navigate(streamsRoute(target)) },
+                            onStreams = { target -> nav.navigate(streamsRoute(target)) { launchSingleTop = true } },
                         )
                     }
                     composable(
@@ -196,7 +201,23 @@ fun AppRoot() {
                         )
                     }
                     composable("player") {
-                        PlayerScreen(onBack = { nav.popBackStack() })
+                        PlayerScreen(
+                            onBack = {
+                                nav.popBackStack()
+                                // Si pasó solo al siguiente episodio, la lista de streams de atrás es la
+                                // del episodio anterior: se salta y se vuelve a la ficha.
+                                val back = nav.currentBackStackEntry
+                                if (back?.destination?.route == "streams/{target}") {
+                                    val shown = runCatching {
+                                        AppJson.decodeFromString(
+                                            WatchTarget.serializer(),
+                                            decodeArg(back.arguments?.getString("target") ?: ""),
+                                        ).videoId
+                                    }.getOrNull()
+                                    if (shown != null && lastPlayed != null && shown != lastPlayed) nav.popBackStack()
+                                }
+                            },
+                        )
                     }
                 }
             }

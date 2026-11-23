@@ -108,6 +108,12 @@ internal fun DevicePickerDialog(
         onDispose { router.removeCallback(callback) }
     }
 
+    var castTimedOut by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.delay(8_000)
+        castTimedOut = true
+    }
+
     // Televisores DLNA: los buscamos nosotros (SSDP).
     var dlnaDevices by remember { mutableStateOf(emptyList<DlnaDevice>()) }
     var searching by remember { mutableStateOf(true) }
@@ -139,7 +145,13 @@ internal fun DevicePickerDialog(
 
                 Section("Chromecast")
                 if (castRoutes.isEmpty()) {
-                    Hint(if (selector == null) "Google Cast no está disponible en este celular." else "Buscando…")
+                    Hint(
+                        when {
+                            selector == null -> "Google Cast no está disponible en este celular."
+                            castTimedOut -> "No encontré Chromecasts. Revisa que estén encendidos y en la misma red Wi-Fi."
+                            else -> "Buscando…"
+                        },
+                    )
                 }
                 castRoutes.forEach { route ->
                     DeviceRow(name = route.name, detail = route.description?.toString(), selected = route.name == connectedTo) {
