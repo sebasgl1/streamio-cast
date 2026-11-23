@@ -10,6 +10,10 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.wifi.WifiManager
 import android.os.Build
+import android.os.Bundle
+import android.support.v4.media.MediaMetadataCompat
+import android.support.v4.media.session.MediaSessionCompat
+import android.support.v4.media.session.PlaybackStateCompat
 import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
@@ -20,6 +24,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
@@ -35,6 +40,13 @@ class StreamingService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var started = false
 
+    /**
+     * Sesión multimedia: con ella Android pone la notificación en el reproductor fijo de arriba
+     * (como Spotify o YouTube) y en la pantalla de bloqueo, en vez de en las "silenciosas" del fondo.
+     */
+    private lateinit var mediaSession: MediaSessionCompat
+    private var lastState: NotifState? = null
+
     /** Lo que muestra la notificación. */
     private data class NotifState(val title: String, val playing: Boolean, val where: String)
 
@@ -43,6 +55,36 @@ class StreamingService : Service() {
     override fun onCreate() {
         super.onCreate()
         val app = application as StremioApp
+        mediaSession = MediaSessionCompat(this, "StreamioCast").apply {
+            setCallback(object : MediaSessionCompat.Callback() {
+                override fun onPlay() = toggleIf(playing = false)
+                override fun onPause() = toggleIf(playing = true)
+                override fun onSeekTo(pos: Long) {
+                    app.session?.seekTo(pos)
+                    refreshPlayback()
+                }
+                override fun onRewind() { app.session?.seekBy(-10_000) }
+                override fun onFastForward() { app.session?.seekBy(30_000) }
+                override fun onStop() = stopAll()
+                override fun onCustomAction(action: String, extras: Bundle?) {
+                    when (action) {
+                        ACTION_BACK -> app.session?.seekBy(-10_000)
+                        ACTION_FORWARD -> app.session?.seekBy(30_000)
+                        ACTION_STOP -> stopAll()
+                    }
+                    refreshPlayback()
+                }
+            })
+            setSessionActivity(openPlayerIntent())
+            isActive = true
+        }
+        // La barra de avance se corrige de vez en cuando (el sistema la extrapola entre medio).
+        scope.launch {
+            while (true) {
+                delay(5_000)
+                if (started) refreshPlayback()
+            }
+        }
         scope.launch {
             app.sessionFlow.collectLatest { session ->
                 if (session == null) return@collectLatest
@@ -60,7 +102,11 @@ class StreamingService : Service() {
                         )
                     }
                     .distinctUntilChanged()
-                    .collect { state -> if (started) notify(build(state)) }
+                    .collect { state ->
+                        lastState = state
+                        updateSession(state)
+                        if (started) notify(build(state))
+                    }
             }
         }
     }
@@ -72,13 +118,13 @@ class StreamingService : Service() {
             ACTION_BACK -> session?.seekBy(-10_000)
             ACTION_FORWARD -> session?.seekBy(30_000)
             ACTION_STOP -> {
-                (application as StremioApp).closeSession()
-                stopSelf()
+                stopAll()
                 return START_NOT_STICKY
             }
             else -> {
                 val title = intent?.getStringExtra(EXTRA_TITLE) ?: getString(R.string.app_name)
                 ensureChannel()
+                updateSession(NotifState(title, false, "Preparando…"))
                 val type = if (Build.VERSION.SDK_INT >= 29) ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK else 0
                 ServiceCompat.startForeground(this, NOTIFICATION_ID, build(NotifState(title, false, "Preparando…")), type)
                 started = true
@@ -90,15 +136,76 @@ class StreamingService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun build(state: NotifState): Notification {
-        val open = PendingIntent.getActivity(
-            this,
-            0,
-            Intent(this, MainActivity::class.java)
-                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                .putExtra(MainActivity.EXTRA_OPEN_PLAYER, true),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+    private fun openPlayerIntent(): PendingIntent = PendingIntent.getActivity(
+        this,
+        0,
+        Intent(this, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            .putExtra(MainActivity.EXTRA_OPEN_PLAYER, true),
+        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+    )
+
+    private fun toggleIf(playing: Boolean) {
+        if (lastState?.playing == playing) (application as StremioApp).session?.togglePlay()
+    }
+
+    private fun stopAll() {
+        (application as StremioApp).closeSession()
+        stopSelf()
+    }
+
+    /** Título, duración y estado para el reproductor de arriba y la pantalla de bloqueo. */
+    private fun updateSession(state: NotifState) {
+        val session = (application as StremioApp).session
+        mediaSession.setMetadata(
+            MediaMetadataCompat.Builder()
+                .putString(MediaMetadataCompat.METADATA_KEY_TITLE, state.title)
+                .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, state.where)
+                .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, session?.controlsDurationMs?.takeIf { it > 0 } ?: -1L)
+                .build(),
         )
+        refreshPlayback()
+    }
+
+    private fun refreshPlayback() {
+        val state = lastState ?: return
+        val session = (application as StremioApp).session
+        val position = session?.controlsPositionMs ?: 0L
+        // Android 13+ arma los botones del reproductor de arriba con esto (no con los de la notificación).
+        mediaSession.setPlaybackState(
+            PlaybackStateCompat.Builder()
+                .setState(
+                    if (state.playing) PlaybackStateCompat.STATE_PLAYING else PlaybackStateCompat.STATE_PAUSED,
+                    position,
+                    if (state.playing) 1f else 0f,
+                )
+                .setActions(
+                    PlaybackStateCompat.ACTION_PLAY or PlaybackStateCompat.ACTION_PAUSE or
+                        PlaybackStateCompat.ACTION_PLAY_PAUSE or PlaybackStateCompat.ACTION_SEEK_TO or
+                        PlaybackStateCompat.ACTION_REWIND or PlaybackStateCompat.ACTION_FAST_FORWARD or
+                        PlaybackStateCompat.ACTION_STOP,
+                )
+                .addCustomAction(ACTION_BACK, "−10 s", android.R.drawable.ic_media_rew)
+                .addCustomAction(ACTION_FORWARD, "+30 s", android.R.drawable.ic_media_ff)
+                .addCustomAction(ACTION_STOP, "Detener", android.R.drawable.ic_menu_close_clear_cancel)
+                .build(),
+        )
+        // La duración puede conocerse después de empezar (al cargar el vídeo).
+        val duration = session?.controlsDurationMs ?: 0L
+        val known = mediaSession.controller.metadata?.getLong(MediaMetadataCompat.METADATA_KEY_DURATION) ?: -1L
+        if (duration > 0 && known != duration) {
+            mediaSession.setMetadata(
+                MediaMetadataCompat.Builder()
+                    .putString(MediaMetadataCompat.METADATA_KEY_TITLE, state.title)
+                    .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, state.where)
+                    .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, duration)
+                    .build(),
+            )
+        }
+    }
+
+    private fun build(state: NotifState): Notification {
+        val open = openPlayerIntent()
         return NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentTitle(state.title)
@@ -107,6 +214,8 @@ class StreamingService : Service() {
             .setSilent(true)
             .setOnlyAlertOnce(true)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .setContentIntent(open)
             .addAction(android.R.drawable.ic_media_rew, "−10 s", action(ACTION_BACK))
             .addAction(
@@ -117,7 +226,9 @@ class StreamingService : Service() {
             .addAction(android.R.drawable.ic_media_ff, "+30 s", action(ACTION_FORWARD))
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Detener", action(ACTION_STOP))
             .setStyle(
-                androidx.media.app.NotificationCompat.MediaStyle().setShowActionsInCompactView(0, 1, 2),
+                androidx.media.app.NotificationCompat.MediaStyle()
+                    .setMediaSession(mediaSession.sessionToken)
+                    .setShowActionsInCompactView(0, 1, 2),
             )
             .build()
     }
@@ -175,6 +286,10 @@ class StreamingService : Service() {
 
     override fun onDestroy() {
         scope.cancel()
+        runCatching {
+            mediaSession.isActive = false
+            mediaSession.release()
+        }
         runCatching { wakeLock?.release() }
         runCatching { wifiLock?.release() }
         wakeLock = null

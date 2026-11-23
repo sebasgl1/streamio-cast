@@ -484,6 +484,18 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
         }
     }
 
+    /** Para la notificación y la pantalla de bloqueo (sesión multimedia de Android). */
+    val controlsPositionMs: Long
+        get() = if (remote != null) remotePos() else player.currentPosition.coerceAtLeast(0)
+
+    val controlsDurationMs: Long
+        get() = if (remote != null) _ui.value.cast?.durationMs ?: 0L else knownDurationMs()
+
+    /** Arrastrar la barra de la notificación. */
+    fun seekTo(positionMs: Long) {
+        if (remote != null) castSeek(positionMs) else player.seekTo(positionMs.coerceAtLeast(0))
+    }
+
     // --- Seguimiento (dónde vas) ----------------------------------------------------
 
     private fun trackProgress() {
