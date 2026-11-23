@@ -69,6 +69,8 @@ import androidx.compose.runtime.LaunchedEffect
 import com.sebasgl1.streamiocast.data.StreamFilter
 import com.sebasgl1.streamiocast.data.StreamResult
 import com.sebasgl1.streamiocast.data.StreamSort
+import com.sebasgl1.streamiocast.data.key
+import com.sebasgl1.streamiocast.data.withVerified
 import com.sebasgl1.streamiocast.data.arrangeStreams
 import com.sebasgl1.streamiocast.data.Verdict
 import com.sebasgl1.streamiocast.data.VideoCodec
@@ -156,10 +158,20 @@ fun StreamsScreen(
     // Colores según el aparato real (marca, año, modelo) y lo aprendido con "No tiene sonido".
     val castDevice = device as? TargetDevice.Chromecast
     val tvDevice = device as? TargetDevice.Tv
-    val results = remember(state.results, device) {
+    // Lo que ya se probó de verdad en el aparato manda sobre lo que se adivina por el nombre.
+    val learned by app.compat.changes.collectAsStateWithLifecycle()
+    val results = remember(state.results, device, learned) {
         val castProfile = app.compat.castProfile(castDevice)
         val tvProfile = app.compat.tvProfile(tvDevice)
-        state.results.map { it.copy(cls = classify(it.info, castProfile), tv = classifyTv(it.info, tvProfile)) }
+        state.results.map { r ->
+            val k = r.key
+            val castSeen = if (k != null) castDevice?.let { app.compat.verified(it.key, k) } else null
+            val tvSeen = if (k != null) tvDevice?.let { app.compat.verified(it.key, k) } else null
+            r.copy(
+                cls = classify(r.info, castProfile).withVerified(castSeen),
+                tv = classifyTv(r.info, tvProfile).withVerified(tvSeen),
+            )
+        }
     }
     val castLabel = castDevice?.name ?: "Chromecast"
     val tvLabel = tvDevice?.name ?: "TV"

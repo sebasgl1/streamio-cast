@@ -93,6 +93,8 @@ private val R_HDR = Regex("""\b(hdr10\+?|hdr|dv|dovi|dolby[\s._-]?vision)\b""")
 private val R_HDR10 = Regex("""\bhdr(10\+?)?\b""")
 private val R_DV = Regex("""\b(dv|dovi|dolby[\s._-]?vision)\b""")
 
+private val R_DISC_SOURCE = Regex("""blu-?ray|remux|bdrip|brrip|bdremux|\bbd\b""")
+
 private val R_AAC = Regex("""\baac""")
 private val R_MP3 = Regex("""\bmp3\b""")
 private val R_OPUS = Regex("""\bopus\b""")
@@ -280,8 +282,18 @@ fun classify(info: StreamInfo, profile: CastProfile = CastProfile.GEN2): Classif
         Verdict.GOOD -> Unit
     }
     audio.reason?.let { reasons += it }
-    if (info.audio.isEmpty()) reasons += "No indica el audio."
-    val needsAudioConvert = audio.verdict != Verdict.GOOD
+    if (info.audio.isEmpty()) {
+        if (!profile.advanced) {
+            // La mayoría de los archivos que no lo dicen traen AC3 o E-AC3, que el Chromecast
+            // de 2ª gen no reproduce: antes salían en verde y al reproducirlos fallaban.
+            maybe = true
+            reasons += "El nombre no indica el audio: muchos traen AC3/E-AC3, que $device no reproduce. " +
+                "Se revisa al abrir el archivo."
+        } else {
+            reasons += "No indica el audio."
+        }
+    }
+    val needsAudioConvert = audio.verdict != Verdict.GOOD || (info.audio.isEmpty() && !profile.advanced)
 
     val needsRemux = info.container !in setOf("mp4", "m4v", "webm")
     if (needsRemux && !profile.advanced) {
@@ -353,6 +365,12 @@ fun classifyTv(info: StreamInfo, profile: TvProfile = TvProfile.GENERIC): Classi
         Verdict.GOOD -> Unit
     }
     audio.reason?.let { reasons += it }
+    // Sin audio en el nombre: los BluRay y remux suelen traer DTS o TrueHD primero.
+    if (info.audio.isEmpty() && profile.dts != Support.YES && R_DISC_SOURCE.containsMatchIn(info.releaseName.lowercase())) {
+        maybe = true
+        reasons += "El nombre no indica el audio y es de BluRay: suelen traer DTS o TrueHD, que $device " +
+            "puede no reproducir. Se revisa al abrir el archivo."
+    }
 
     val size = info.sizeBytes
     val res = info.resolution ?: 0

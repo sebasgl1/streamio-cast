@@ -147,3 +147,26 @@ fun arrangeStreams(
     }
     return shown.sortedWith(comparator)
 }
+
+/** Identifica un stream (torrent + archivo, o enlace directo) para recordar cómo le fue al reproducirlo. */
+fun streamKeyOf(infoHash: String?, fileIdx: Int?, url: String?): String? =
+    infoHash?.let { "${it.lowercase()}:${fileIdx ?: -1}" } ?: url
+
+val StreamResult.key: String?
+    get() = streamKeyOf(stream.infoHash, stream.fileIdx, stream.url)
+
+/**
+ * Lo que dijo la revisión del archivo real en un aparato: pesa más que lo que se adivina por el
+ * nombre. [problem] null = compatible.
+ */
+data class Verified(val problem: String?)
+
+fun Classification.withVerified(v: Verified?): Classification = when {
+    v == null -> this
+    v.problem != null -> copy(verdict = Verdict.BAD, reasons = listOf("Revisado al reproducirlo: ${v.problem}"))
+    else -> copy(
+        verdict = Verdict.GOOD,
+        reasons = listOf("✓ Revisado al reproducirlo: vídeo y audio compatibles.") +
+            reasons.filterNot { it.startsWith("Revisado") },
+    )
+}

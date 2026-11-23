@@ -7,6 +7,7 @@ import com.sebasgl1.streamiocast.data.StreamSort
 import com.sebasgl1.streamiocast.data.analyzeStream
 import com.sebasgl1.streamiocast.data.arrangeStreams
 import com.sebasgl1.streamiocast.data.classify
+import com.sebasgl1.streamiocast.data.withVerified
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -51,5 +52,24 @@ class StreamSortTest {
         val res = arrangeStreams(all, StreamFilter.ALL, StreamSort.RESOLUTION, descending = true)
         // 4K, luego los 1080p (desempate por seeds: c 900, a 40, e sin seeds), luego 720p.
         assertEquals(listOf("d", "c", "a", "e", "b"), ids(res))
+    }
+}
+
+class VerifiedAndUnknownAudioTest {
+    private fun info(title: String) = analyzeStream(Stream(name = "Torrentio\n1080p", title = title, infoHash = "x"))
+
+    @Test
+    fun unknownAudioIsYellowOnOldChromecast() {
+        assertEquals(com.sebasgl1.streamiocast.data.Verdict.MAYBE, classify(info("Movie.1080p.WEB-DL.x264\n👤 50")).verdict)
+    }
+
+    @Test
+    fun realCheckOverridesTheGuess() {
+        val guess = classify(info("Movie.1080p.WEB.x264.AAC\n👤 50"))
+        assertEquals(com.sebasgl1.streamiocast.data.Verdict.GOOD, guess.verdict)
+        val bad = guess.withVerified(com.sebasgl1.streamiocast.data.Verified("Vídeo de 10 bits"))
+        assertEquals(com.sebasgl1.streamiocast.data.Verdict.BAD, bad.verdict)
+        assertEquals("Revisado al reproducirlo: Vídeo de 10 bits", bad.reasons.single())
+        assertEquals("tt:1", com.sebasgl1.streamiocast.data.streamKeyOf("TT", 1, null))
     }
 }

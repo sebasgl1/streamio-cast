@@ -22,6 +22,7 @@ import com.sebasgl1.streamiocast.cast.lanAddress
 import com.sebasgl1.streamiocast.data.PlaybackPrefs
 import com.sebasgl1.streamiocast.data.ProgressInput
 import com.sebasgl1.streamiocast.data.StreamFilter
+import com.sebasgl1.streamiocast.data.streamKeyOf
 import com.sebasgl1.streamiocast.data.AudioCodec
 import com.sebasgl1.streamiocast.data.audioCodecOfMime
 import com.sebasgl1.streamiocast.data.classify
@@ -1257,6 +1258,15 @@ class PlaybackSession(private val app: StremioApp, val request: PlaybackRequest)
             if (convertPlan == null && !force) {
                 _ui.update { it.copy(cast = it.cast?.copy(state = "Revisando el formato…")) }
                 val report = remoteCompatReport(toTv)
+                // Se recuerda el resultado: la lista de streams lo mostrará en vez de adivinar por el nombre.
+                val deviceKey = app.selectedDevice.value?.key
+                val streamKey = streamKeyOf(request.infoHash, request.fileIdx, request.url)
+                if (report != null && deviceKey != null && streamKey != null) {
+                    when {
+                        report.blocking.isNotEmpty() -> app.compat.markVerified(deviceKey, streamKey, report.blocking.first())
+                        report.warnings.isEmpty() -> app.compat.markVerified(deviceKey, streamKey, null)
+                    }
+                }
                 if (report != null && report.blocking.isNotEmpty()) {
                     val plan = buildConvertPlan(toTv)
                     if (plan != null && request.autoConvert) {

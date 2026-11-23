@@ -56,6 +56,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -143,6 +144,10 @@ fun PlayerScreen(onBack: () -> Unit, model: PlayerViewModel = viewModel()) {
                     modifier = Modifier.fillMaxSize(),
                 )
             } else {
+                // Una vista nueva por cada sesión (cada episodio trae su propio reproductor): si no,
+                // la vista seguía conectada al reproductor del episodio anterior, ya liberado, y
+                // quedaba congelado su último cuadro mientras sonaba el audio del siguiente.
+                key(vm) {
                 AndroidView(
                     factory = { ctx ->
                         PlayerView(ctx).apply {
@@ -159,6 +164,7 @@ fun PlayerScreen(onBack: () -> Unit, model: PlayerViewModel = viewModel()) {
                         }
                     },
                     update = { view ->
+                        if (view.player !== vm.player) view.player = vm.player
                         view.subtitleView?.setFractionalTextSize(
                             SubtitleView.DEFAULT_TEXT_SIZE_FRACTION * SIZE_SCALE[ui.subtitleSize.coerceIn(0, 2)],
                         )
@@ -166,6 +172,7 @@ fun PlayerScreen(onBack: () -> Unit, model: PlayerViewModel = viewModel()) {
                     onRelease = { it.player = null },
                     modifier = Modifier.fillMaxSize(),
                 )
+                }
 
                 if (ui.externalSelected != null) {
                     SubtitleOverlay(
