@@ -104,4 +104,14 @@ class LibrarySyncTest {
         assertEquals(1_577_836_800_000L, parseInstantMs("2020-01-01T00:00:00+00:00"))
         assertEquals(0L, parseInstantMs("nope"))
     }
+
+    @Test
+    fun unwatchClearsTheWatchedFlag() {
+        val watched = applyProgress(null, input(0, watched = true), now)
+        assertEquals(1L, watched.state().num("flaggedWatched"))
+        val undone = applyProgress(watched, input(0).copy(unwatch = true), now)
+        assertEquals(0L, undone.state().num("flaggedWatched"))
+        assertEquals(0L, undone.state().num("timeOffset"))
+        assertEquals("tt1:1:2", undone.state()["video_id"]!!.jsonPrimitive.content)
+    }
 }

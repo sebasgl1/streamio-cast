@@ -2,6 +2,12 @@
 
 package com.sebasgl1.streamiocast.ui
 
+import com.sebasgl1.streamiocast.history.watchTargetFor
+import com.sebasgl1.streamiocast.history.setWatched
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.filled.CheckCircle
 import com.sebasgl1.streamiocast.cast.TransmitPill
 
 import android.app.Application
@@ -168,30 +174,23 @@ private fun DetailContent(
     val episodes = remember(meta, season) {
         meta.videos.filter { it.season == season }.sortedBy { it.episode ?: 0 }
     }
-    val openMovie: () -> Unit = {
-        onStreams(
-            WatchTarget(
-                videoId = meta.id,
-                metaId = meta.id,
-                type = meta.type.ifEmpty { "movie" },
-                name = meta.name,
-                poster = meta.poster,
-            ),
-        )
-    }
-    val openEpisode: (Video) -> Unit = { video ->
-        onStreams(
-            WatchTarget(
-                videoId = video.id,
-                metaId = meta.id,
-                type = meta.type.ifEmpty { "series" },
-                name = meta.name,
-                poster = meta.poster,
-                season = video.season ?: 0,
-                episode = video.episode ?: 0,
-                episodeTitle = video.label,
-            ),
-        )
+    val app = LocalContext.current.applicationContext as StremioApp
+    val context = LocalContext.current
+    val openMovie: () -> Unit = { onStreams(watchTargetFor(meta, null)) }
+    val openEpisode: (Video) -> Unit = { video -> onStreams(watchTargetFor(meta, video)) }
+    // Visto / no visto (por ejemplo, lo seguiste en otro aparato).
+    val toggleWatched: (List<Video>, Boolean) -> Unit = { videos, watched ->
+        app.setWatched(meta, videos, watched)
+        val what = when {
+            videos.isEmpty() -> "Película"
+            videos.size == 1 -> "Episodio"
+            else -> "Temporada"
+        }
+        android.widget.Toast.makeText(
+            context,
+            if (watched) "$what marcad${if (what == "Episodio") "o" else "a"} como vist${if (what == "Episodio") "o" else "a"}" else "Visto quitado",
+            android.widget.Toast.LENGTH_SHORT,
+        ).show()
     }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -216,7 +215,7 @@ private fun DetailContent(
                         .fillMaxHeight(),
                     contentPadding = PaddingValues(start = 8.dp, top = 24.dp, end = 24.dp, bottom = 24.dp),
                 ) {
-                    episodesSection(seasons, season, { season = it }, episodes, history, openEpisode)
+                    episodesSection(seasons, season, { season = it }, episodes, history, openEpisode, toggleWatched)
                 }
             }
         } else {
@@ -229,14 +228,20 @@ private fun DetailContent(
                     item { ResumeEpisode(resume, resumeVideo) { openEpisode(resumeVideo) } }
                 }
                 if (seasons.isNotEmpty()) {
-                    episodesSection(seasons, season, { season = it }, episodes, history, openEpisode)
+                    episodesSection(seasons, season, { season = it }, episodes, history, openEpisode, toggleWatched)
                 } else {
                     item {
                         val entry = history[meta.id]
                         Column(Modifier.padding(top = 20.dp)) {
                             WatchProgress(entry, Modifier.padding(bottom = 10.dp))
-                            Button(onClick = openMovie) {
-                                Text(if (resumePosition(entry) != null) "Continuar" else "Ver streams")
+                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Button(onClick = openMovie) {
+                                    Text(if (resumePosition(entry) != null) "Continuar" else "Ver streams")
+                                }
+                                val seen = entry?.watched == true
+                                OutlinedButton(onClick = { toggleWatched(emptyList(), !seen) }) {
+                                    Text(if (seen) "Quitar visto" else "Marcar como vista")
+                                }
                             }
                         }
                     }
@@ -319,15 +324,29 @@ private fun LazyListScope.episodesSection(
     episodes: List<Video>,
     history: Map<String, WatchEntry>,
     onEpisode: (Video) -> Unit,
+    onWatched: (List<Video>, Boolean) -> Unit,
 ) {
     item {
         Column {
-            Text(
-                text = "Episodios",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
+            Row(
                 modifier = Modifier.padding(top = 24.dp, bottom = 8.dp),
-            )
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "Episodios",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f),
+                )
+                // Toda la temporada de una (solo lo ya estrenado).
+                val released = episodes.filter { !isUpcoming(it) }
+                if (released.isNotEmpty()) {
+                    val allSeen = released.all { history[it.id]?.watched == true }
+                    TextButton(onClick = { onWatched(released, !allSeen) }) {
+                        Text(if (allSeen) "Quitar vistos" else "Marcar temporada vista")
+                    }
+                }
+            }
             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(seasons) { s ->
                     FilterChip(
@@ -340,13 +359,23 @@ private fun LazyListScope.episodesSection(
             Spacer(Modifier.height(8.dp))
         }
     }
-    items(episodes) { video ->
-        EpisodeRow(video, history[video.id]) { onEpisode(video) }
+    items(episodes, key = { it.id }) { video ->
+        val entry = history[video.id]
+        EpisodeRow(
+            video = video,
+            entry = entry,
+            onClick = { onEpisode(video) },
+            onToggleWatched = { onWatched(listOf(video), entry?.watched != true) },
+        )
     }
 }
 
+private fun isUpcoming(video: Video): Boolean = video.released?.take(10)?.let { date ->
+    runCatching { java.time.LocalDate.parse(date).isAfter(java.time.LocalDate.now()) }.getOrDefault(false)
+} ?: false
+
 @Composable
-private fun EpisodeRow(video: Video, entry: WatchEntry?, onClick: () -> Unit) {
+private fun EpisodeRow(video: Video, entry: WatchEntry?, onClick: () -> Unit, onToggleWatched: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -374,7 +403,7 @@ private fun EpisodeRow(video: Video, entry: WatchEntry?, onClick: () -> Unit) {
             )
             video.released?.take(10)?.let { date ->
                 // Aún no sale: no tendrá streams.
-                val upcoming = runCatching { java.time.LocalDate.parse(date).isAfter(java.time.LocalDate.now()) }.getOrDefault(false)
+                val upcoming = isUpcoming(video)
                 Text(
                     text = if (upcoming) "Se estrena el $date" else date,
                     style = MaterialTheme.typography.bodySmall,
@@ -382,6 +411,15 @@ private fun EpisodeRow(video: Video, entry: WatchEntry?, onClick: () -> Unit) {
                 )
             }
             WatchProgress(entry, Modifier.padding(top = 4.dp))
+        }
+        // Visto / no visto: un toque.
+        val seen = entry?.watched == true
+        IconButton(onClick = onToggleWatched) {
+            Icon(
+                imageVector = if (seen) Icons.Filled.CheckCircle else Icons.Outlined.CheckCircle,
+                contentDescription = if (seen) "Quitar visto" else "Marcar como visto",
+                tint = if (seen) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+            )
         }
     }
 }

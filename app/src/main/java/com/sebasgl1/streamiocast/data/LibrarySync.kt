@@ -32,6 +32,8 @@ data class ProgressInput(
     val watched: Boolean,
     /** Si se terminó un episodio, el siguiente (Stremio pasa a él con timeOffset = 1). */
     val nextVideoId: String?,
+    /** "Quitar visto": deja el vídeo como no visto y desde el principio. */
+    val unwatch: Boolean = false,
 )
 
 /** Progreso leído de Stremio para "Continuar viendo". */
@@ -96,7 +98,10 @@ fun applyProgress(existing: JsonObject?, p: ProgressInput, now: Instant): JsonOb
     var videoId = p.videoId
     val duration = if (p.durationMs > 0) p.durationMs else old.long("duration")
 
-    if (p.watched) {
+    if (p.unwatch) {
+        flagged = 0
+        offset = 0
+    } else if (p.watched) {
         if (flagged == 0L) {
             flagged = 1
             timesWatched += 1
