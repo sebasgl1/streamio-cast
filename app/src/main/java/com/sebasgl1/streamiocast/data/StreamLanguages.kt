@@ -100,7 +100,9 @@ fun StreamResult.matchesQuery(query: String): Boolean {
     if (words.isEmpty()) return true
     val hay = foldText(
         listOfNotNull(stream.name, stream.title, stream.description, stream.behaviorHints?.filename, info.releaseName)
-            .joinToString(" ") + " " + info.languages.joinToString(" ") { languageLabel(it) },
+            .joinToString(" ") + " " +
+            // "Latino" también se encuentra buscando "español".
+            (info.languages + info.languageFamilies).joinToString(" ") { languageLabel(it) },
     )
     return words.all { it in hay }
 }
