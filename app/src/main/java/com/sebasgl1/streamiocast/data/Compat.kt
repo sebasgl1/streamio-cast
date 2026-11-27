@@ -59,6 +59,8 @@ data class StreamInfo(
     /** HDR10 (o HDR10+): base que tu TV sí muestra bien. */
     val hdr10: Boolean = false,
     val dolbyVision: Boolean = false,
+    /** Idiomas que indica el addon (banderas o palabras como "Latino"); ver StreamLanguages. */
+    val languages: Set<String> = emptySet(),
 )
 
 data class Classification(
@@ -198,6 +200,7 @@ fun analyzeStream(s: Stream): StreamInfo {
         sizeText = sizeText,
         sizeBytes = sizeBytes,
         provider = R_PROVIDER.find(text)?.groupValues?.get(1)?.trim()?.takeIf { it.isNotEmpty() },
+        languages = detectLanguages(listOfNotNull(text, s.behaviorHints?.filename).joinToString(" ")),
         hdr10 = R_HDR10.containsMatchIn(hay),
         dolbyVision = R_DV.containsMatchIn(hay),
     )

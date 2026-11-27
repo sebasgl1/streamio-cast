@@ -2,6 +2,12 @@
 
 package com.sebasgl1.streamiocast.ui
 
+import com.sebasgl1.streamiocast.data.matchesQuery
+import com.sebasgl1.streamiocast.data.languageLabel
+import com.sebasgl1.streamiocast.data.languageFamilies
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Search
 import android.app.Application
 import android.net.Uri
 import androidx.compose.foundation.background
@@ -144,6 +150,9 @@ fun StreamsScreen(
         mutableStateOf(runCatching { StreamSort.valueOf(prefs.streamSort) }.getOrDefault(StreamSort.RECOMMENDED))
     }
     var descending by rememberSaveable { mutableStateOf(prefs.streamSortDescending) }
+    var language by rememberSaveable { mutableStateOf(prefs.streamLanguage) }
+    var query by rememberSaveable { mutableStateOf("") }
+    var searching by rememberSaveable { mutableStateOf(false) }
     var selected by remember { mutableStateOf<StreamResult?>(null) }
 
     // Al elegir (o cambiar) el aparato, la lista se filtra sola para él. Solo cuando cambia: al
@@ -178,11 +187,20 @@ fun StreamsScreen(
     val castLabel = castDevice?.name ?: "Chromecast"
     val tvLabel = tvDevice?.name ?: "TV"
 
-    // Los dos van juntos: primero el filtro del aparato, luego el orden (Chromecast + Seeds = el de
-    // más seeds que sirve en el Chromecast arriba).
-    val visible = remember(results, filter, sort, descending) { arrangeStreams(results, filter, sort, descending) }
-    val ccCount = results.count { it.cls.verdict != Verdict.BAD }
-    val tvCount = results.count { it.tv.verdict != Verdict.BAD }
+    // Idiomas que aparecen en esta lista, del más común al menos (para los chips).
+    val languages = remember(results) {
+        results.flatMap { it.info.languageFamilies }.groupingBy { it }.eachCount()
+            .entries.sortedByDescending { it.value }.map { it.key }
+    }
+    // Idioma y búsqueda primero; luego el filtro del aparato y el orden, todos juntos.
+    val byLanguage = remember(results, language, query) {
+        results.filter { r ->
+            (language == "ALL" || language in r.info.languageFamilies) && r.matchesQuery(query)
+        }
+    }
+    val visible = remember(byLanguage, filter, sort, descending) { arrangeStreams(byLanguage, filter, sort, descending) }
+    val ccCount = byLanguage.count { it.cls.verdict != Verdict.BAD }
+    val tvCount = byLanguage.count { it.tv.verdict != Verdict.BAD }
 
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -210,7 +228,66 @@ fun StreamsScreen(
                     color = if (filter != StreamFilter.ALL) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            IconButton(onClick = {
+                searching = !searching
+                if (!searching) query = ""
+            }) {
+                Icon(Icons.Filled.Search, contentDescription = "Buscar en la lista")
+            }
             TransmitPill(modifier = Modifier.padding(end = 4.dp))
+        }
+
+        // Búsqueda libre: "latino", "castellano dual", "1080"…
+        if (searching) {
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                singleLine = true,
+                placeholder = { Text("Buscar: latino, castellano, dual, 1080…") },
+                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                trailingIcon = {
+                    if (query.isNotEmpty()) {
+                        IconButton(onClick = { query = "" }) { Icon(Icons.Filled.Close, contentDescription = "Borrar") }
+                    }
+                },
+            )
+        }
+
+        // Idioma: solo los que aparecen en esta lista. Latino y castellano cuentan como español.
+        if (languages.isNotEmpty() || language != "ALL") {
+            LazyRow(
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                item {
+                    Text(
+                        "Idioma",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                val options = listOf("ALL") + (languages + listOfNotNull(language.takeIf { it != "ALL" })).distinct()
+                items(options) { code ->
+                    val count = if (code == "ALL") results.size else results.count { code in it.info.languageFamilies }
+                    FilterChip(
+                        selected = language == code,
+                        onClick = {
+                            language = code
+                            prefs.streamLanguage = code
+                        },
+                        label = {
+                            Text(
+                                (if (code == "ALL") "Todos" else languageLabel(code)) + " ($count)",
+                                maxLines = 1,
+                            )
+                        },
+                    )
+                }
+            }
         }
 
         // Filtro: qué streams sirven en el aparato al que vas a transmitir.
@@ -220,7 +297,7 @@ fun StreamsScreen(
         ) {
             val loaded = !state.loading && results.isNotEmpty()
             val chips = listOf(
-                StreamFilter.ALL to "Todos" + if (loaded) " (${results.size})" else "",
+                StreamFilter.ALL to "Todos" + if (loaded) " (${byLanguage.size})" else "",
                 StreamFilter.CHROMECAST to castLabel + if (loaded) " ($ccCount)" else "",
                 StreamFilter.TV to tvLabel + if (loaded) " ($tvCount)" else "",
             )
@@ -307,8 +384,16 @@ fun StreamsScreen(
                 }
 
                 else -> {
+                    val hiddenByLanguage = state.message == null && results.isNotEmpty() && byLanguage.isEmpty()
                     val emptyMessage = state.message
-                        ?: if (state.results.isNotEmpty()) {
+                        ?: if (hiddenByLanguage) {
+                            val what = listOfNotNull(
+                                language.takeIf { it != "ALL" }?.let { "en ${languageLabel(it).lowercase()}" },
+                                query.takeIf { it.isNotBlank() }?.let { "con “$it”" },
+                            ).joinToString(" ")
+                            "No hay streams $what para este título. Los addons no siempre indican el idioma: " +
+                                "prueba con \"Todos\" y elige el audio en el reproductor."
+                        } else if (state.results.isNotEmpty()) {
                             "Ninguno de los ${results.size} streams sirve directo en " +
                                 (if (filter == StreamFilter.TV) tvLabel else castLabel) +
                                 ". Con \"Ver todos\" puedes elegir uno igual: si el audio o el vídeo no " +
@@ -324,7 +409,13 @@ fun StreamsScreen(
                         verticalArrangement = Arrangement.spacedBy(16.dp),
                     ) {
                         Text(emptyMessage, textAlign = TextAlign.Center)
-                        if (state.message == null && state.results.isNotEmpty()) {
+                        if (hiddenByLanguage) {
+                            Button(onClick = {
+                                language = "ALL"
+                                prefs.streamLanguage = "ALL"
+                                query = ""
+                            }) { Text("Ver todos los idiomas") }
+                        } else if (state.message == null && state.results.isNotEmpty()) {
                             // Hay streams, solo que el filtro los oculta: mostrarlos, no volver a buscar.
                             Button(onClick = {
                                 filter = StreamFilter.ALL
@@ -396,6 +487,8 @@ private fun StreamRow(item: StreamResult, castLabel: String, tvLabel: String, on
         if (info.audio.isNotEmpty()) add(info.audio.joinToString("/") { it.label })
         info.container?.let { add(it.uppercase()) }
     }
+    // Idiomas aparte, bien visibles: es lo primero que buscan quienes solo ven en español.
+    val languageText = info.languages.joinToString(" · ") { languageLabel(it) }
     val details = buildList<String> {
         info.seeders?.let { add("👤 $it") }
         info.sizeText?.let { add(it) }
@@ -421,6 +514,14 @@ private fun StreamRow(item: StreamResult, castLabel: String, tvLabel: String, on
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (languageText.isNotEmpty()) {
+                Text(
+                    text = "🗣 $languageText",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.tertiary,
+                    modifier = Modifier.padding(top = 4.dp),
                 )
             }
             Text(

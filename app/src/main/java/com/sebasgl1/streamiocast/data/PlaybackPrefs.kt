@@ -49,6 +49,16 @@ class PlaybackPrefs(context: Context) {
         get() = prefs.getString("streamSort", "RECOMMENDED") ?: "RECOMMENDED"
         set(value) = prefs.edit().putString("streamSort", value).apply()
 
+    /**
+     * Idioma de la lista de streams ("es", "en"… o "ALL"). Sin elegir: el idioma de audio de
+     * Ajustes, así en un celular configurado en español salen primero los streams en español.
+     */
+    var streamLanguage: String
+        get() = prefs.getString("streamLanguage", null)
+            ?: audioLang.takeIf { it != ORIGINAL && it.isNotBlank() }?.substringBefore('-')
+            ?: "ALL"
+        set(value) = prefs.edit().putString("streamLanguage", value).apply()
+
     var streamSortDescending: Boolean
         get() = prefs.getBoolean("streamSortDesc", true)
         set(value) = prefs.edit().putBoolean("streamSortDesc", value).apply()
